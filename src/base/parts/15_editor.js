@@ -631,10 +631,23 @@ const Editor = {
     if (v.classList.contains('dockMin')) { v.classList.remove('dockMin'); this.setDock(true); } else v.style.removeProperty('--dockH');
     this.view.fit = true; this.renderPanel(); this.requestRender();
   },
+  /* 曲線模板（v1.15）：選取後即時套用，之後仍可拖曳微調 */
+  curvePresetSel() {
+    const cur = this.edit.curvePreset || '';
+    const sel = h('select', { class: 'cvPre' }, h('option', { value: '' }, '📐 曲線模板…'), CURVE_PRESETS.map((g) => h('optgroup', { label: g.g }, g.items.map((it) => h('option', { value: it.id, selected: it.id === cur }, it.name)))));
+    sel.onchange = () => { const it = CURVE_PRESETS.flatMap((g) => g.items).find((x) => x.id === sel.value); if (!it) return; this.applyCurvePreset(it); };
+    return sel;
+  },
+  applyCurvePreset(it) {
+    const cv = (a) => (a ? a.map(([x, y]) => [x / 255, y / 255]) : clone(ID_CURVE));
+    this.edit.curve.rgb = cv(it.rgb); this.edit.curve.r = cv(it.r); this.edit.curve.g = cv(it.g); this.edit.curve.b = cv(it.b); this.edit.curvePreset = it.id;
+    this.changed(); this.commit('曲線模板：' + it.name); toast(it.name + '：' + it.desc, 3500);
+    if (this.curveFS) { this.renderCurveBar(); this.drawOverlay(); } else this.renderPanel();
+  },
   renderCurveBar() {
     const cb = $('#curveBar'); cb.innerHTML = ''; const ch = this.curveFS.ch;
-    cb.append(h('div', { class: 'cbHd' }, h('b', null, '曲線'), h('span', { class: 'grow' }),
-      h('button', { class: 'btn sm', onclick: () => { this.edit.curve[ch] = clone(ID_CURVE); this.changed(); this.commit('重設曲線'); } }, '重設'),
+    cb.append(h('div', { class: 'cbHd' }, h('b', null, '曲線'), this.curvePresetSel(), h('span', { class: 'grow' }),
+      h('button', { class: 'btn sm', onclick: () => { this.edit.curve[ch] = clone(ID_CURVE); delete this.edit.curvePreset; this.changed(); this.commit('重設曲線'); this.renderCurveBar(); this.drawOverlay(); } }, '重設'),
       h('button', { class: 'btn pri sm', onclick: () => this.closeCurveFS() }, '完成')),
       h('div', { class: 'cbCh' }, [['rgb', '#f2ebe0', '亮度'], ['r', '#e0574a', '紅'], ['g', '#5fb257', '綠'], ['b', '#5a86e0', '藍'], ['par', '#9a8a74', '參數']].map(([k, c, n]) => {
         const bt = h('button', { class: 'cbc' + (k === ch ? ' on' : '') + (k === 'par' ? ' par' : ''), title: n, onclick: () => { this.curveFS.ch = k; if (k !== 'par') this.curveCh = k; this.renderCurveBar(); this.drawOverlay(); requestAnimationFrame(() => $('#v-ed').style.setProperty('--dockH', $('#curveBar').offsetHeight + 'px')); } }, k === 'par' ? h('b', null, '≈') : h('i')); bt.style.setProperty('--c', c); return bt; })),
@@ -646,10 +659,10 @@ const Editor = {
     const B = this.cbox(); const ch = this.curveFS.ch; if (ch === 'par') return; const pts = this.edit.curve[ch];
     const col = { rgb: '#ffffff', r: '#ff6b5e', g: '#6fd35f', b: '#6b97ff' }[ch];
     x.save(); x.shadowColor = 'rgba(0,0,0,.6)'; x.shadowBlur = 3 * dpr;
-    x.strokeStyle = 'rgba(255,255,255,.35)'; x.lineWidth = 1 * dpr; x.strokeRect(B.x, B.y, B.w, B.h); x.beginPath();
+    const dragging = !!this.cvDrag; x.strokeStyle = dragging ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.35)'; x.lineWidth = 1 * dpr; x.strokeRect(B.x, B.y, B.w, B.h); x.beginPath();
     for (let i = 1; i < 4; i++) { x.moveTo(B.x + B.w * i / 4, B.y); x.lineTo(B.x + B.w * i / 4, B.y + B.h); x.moveTo(B.x, B.y + B.h * i / 4); x.lineTo(B.x + B.w, B.y + B.h * i / 4); } x.stroke();
     const hd = this.histData; if (hd) { const a = ch === 'r' ? hd.hr : ch === 'g' ? hd.hg : ch === 'b' ? hd.hb : hd.hg.map((v, i) => (v + hd.hr[i] + hd.hb[i]) / 3); let m = 1; for (let i = 1; i < 63; i++) m = Math.max(m, a[i]);
-      x.shadowBlur = 0; x.fillStyle = 'rgba(255,255,255,.13)'; x.beginPath(); x.moveTo(B.x, B.y + B.h); for (let i = 0; i < 64; i++) x.lineTo(B.x + i / 63 * B.w, B.y + B.h - Math.min(1, a[i] / m) * B.h * 0.9); x.lineTo(B.x + B.w, B.y + B.h); x.fill(); x.shadowBlur = 3 * dpr; }
+      x.shadowBlur = 0; x.fillStyle = dragging ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.13)'; x.beginPath(); x.moveTo(B.x, B.y + B.h); for (let i = 0; i < 64; i++) x.lineTo(B.x + i / 63 * B.w, B.y + B.h - Math.min(1, a[i] / m) * B.h * 0.9); x.lineTo(B.x + B.w, B.y + B.h); x.fill(); x.shadowBlur = 3 * dpr; }
     const f = Engine.monotone(pts); x.strokeStyle = col; x.lineWidth = 2.2 * dpr; x.beginPath();
     for (let i = 0; i <= 200; i++) { const v = i / 200; const y = clamp(f(v), 0, 1); const X = B.x + v * B.w, Y = B.y + (1 - y) * B.h; i ? x.lineTo(X, Y) : x.moveTo(X, Y); } x.stroke();
     for (const p of pts) { x.beginPath(); x.arc(B.x + p[0] * B.w, B.y + (1 - p[1]) * B.h, 9 * dpr, 0, 7); x.fillStyle = 'rgba(235,235,235,.95)'; x.fill(); }
@@ -673,6 +686,7 @@ const Editor = {
     const vx = (p[0] - d.dx - B.x) / B.w, vy = 1 - (p[1] - d.dy - B.y) / B.h; const end = d.i === 0 || d.i === a.length - 1;
     if (!end && (vy < -0.18 || vy > 1.18)) { a.splice(d.i, 1); this.cvDrag = null; this.changed(); this.drawOverlay(); return; }
     const lo = d.i > 0 ? a[d.i - 1][0] + 0.01 : 0, hi = d.i < a.length - 1 ? a[d.i + 1][0] - 0.01 : 1;
+    delete this.edit.curvePreset;
     a[d.i] = [end && a.length > 1 ? (d.i === 0 ? clamp(vx, 0, hi) : clamp(vx, lo, 1)) : clamp(vx, lo, hi), clamp(vy, 0, 1)];
     this.changed(); this.drawOverlay();
   },
@@ -739,7 +753,6 @@ const Editor = {
   p_light(b) {
     b.append(this.S('exposure', '曝光', -5, 5, 0.01, { fmt: (v) => v.toFixed(2) + ' EV' }), this.S('contrast', '對比', -100, 100, 1),
       this.S('highlights', '亮部', -100, 100, 1), this.S('shadows', '陰影', -100, 100, 1), this.S('whites', '白色', -100, 100, 1), this.S('blacks', '黑色', -100, 100, 1));
-    b.append(h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => this.openCurveFS() }, '〰 色調曲線（全螢幕）')));
   },
   curveUI(s) {
     const chs = [['rgb', '⚪ RGB'], ['r', '紅'], ['g', '綠'], ['b', '藍'], ['par', '參數']];
@@ -750,7 +763,7 @@ const Editor = {
       s.append(P('h', '亮部'), P('l', '亮調'), P('d', '暗調'), P('s', '陰影'), P('s1', '分割：暗', 5, 45), P('s2', '分割：中', 30, 70), P('s3', '分割：亮', 55, 95));
       return;
     }
-    s.append(h('div', { class: 'acts' }, h('button', { class: 'btn sm pri', onclick: () => this.openCurveFS() }, '⤢ 全螢幕編輯曲線')));
+    s.append(h('div', { class: 'acts' }, this.curvePresetSel(), h('button', { class: 'btn sm pri', onclick: () => this.openCurveFS() }, '⤢ 全螢幕編輯曲線')));
     const cv = h('canvas', { id: 'curveCv', width: 600, height: 444 }); s.append(cv, h('div', { class: 'sub' }, '點一下新增控制點、拖曳調整，往外拖出即可刪除。'));
     const pts = () => this.edit.curve[this.curveCh];
     const col = { rgb: '#efe2cb', r: '#e0574a', g: '#5fb257', b: '#5a86e0' }[this.curveCh];

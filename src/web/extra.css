@@ -46,3 +46,7 @@
 .lbl2>.seg,.lab>.seg,.aicard>.seg,.acts>.seg{display:flex;flex:1 0 auto;flex-wrap:nowrap;max-width:100%;overflow-x:auto;scrollbar-width:none}
 .lbl2>.seg::-webkit-scrollbar,.lab>.seg::-webkit-scrollbar{display:none}
 .lbl2>.seg .btn,.lab>.seg .btn,.aicard>.seg .btn,.acts>.seg .btn{flex:1 0 auto;justify-content:center;white-space:nowrap}
+/* v1.15 曲線模板選單 */
+.cbHd>b{white-space:nowrap;flex:none}
+.cbHd .cvPre{flex:1 1 auto;min-width:0;max-width:none}
+.cvPre{padding:6px 10px;font-size:14px;font-weight:700;border-radius:999px;max-width:58vw;margin-left:8px;border:1px solid var(--edge);background:var(--paper2,rgba(255,255,255,.4));color:var(--ink)}
