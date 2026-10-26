@@ -436,7 +436,7 @@ const Editor = {
       this.slider('通透感', () => (this.edit.aiEnh || {}).clear || 0, (v) => this.aiEnhApply(null, v), 0, 100, 1, 0, { onCommit: () => this.commit('AI 通透感') }),
       h('div', { class: 'sub' }, '通透感：去除灰濛（大氣透視）、提升中大尺度的局部對比與微細節、穩住黑位並保護高光，讓畫面更清透立體；高 ISO 時會自動減少細節強化，避免放大雜訊。'),
       ae.d && ae.skyOn ? h('div', { class: 'sub' }, '☁ 已偵測到天空：自動加入「AI 天空」遮色片壓低亮部、加深藍色。天空完全過曝時，可到「天空」分頁置換天空。') : null));
-    this.styleCard(b); this.composeCard(b);
+    this.atmCard(b); this.styleCard(b); this.composeCard(b);
     b.append(h('div', { class: 'aicard' }, h('h4', null, '📐 AI 拉正'), h('div', { class: 'sub' }, '偵測建築、門窗、地平線等直線，自動修正歪斜與透視（像 Lightroom 的 Upright）：讓垂直線真正垂直、水平線水平，必要時拉伸垂直方向變成正視角度，並自動裁掉空白邊。'), this.uprightSeg()));
     b.append(h('div', { class: 'sec' }, '基本自動'));
     b.append(h('div', { class: 'note' }, '依照相片的明暗分佈自動設定曝光、對比、亮部、陰影、白色、黑色與飽和度，之後仍可手動微調。'));
@@ -448,10 +448,18 @@ const Editor = {
     if (this.autoUndo) b.append(h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => { this.edit = normEdit(JSON.parse(this.autoUndo)); this.autoUndo = null; this.changed(); this.commit('取消自動'); this.renderPanel(); } }, '↶ 取消自動')));
   },
   doAuto(tone, wb) {
-    const id = imgData(this.ses.aiPrev || this.ses.prev, 320); this.autoUndo = JSON.stringify(this.edit);
-    if (wb) { const w = autoWB(id); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; }
-    if (tone) Object.assign(this.edit, autoTone(id, (this.rec.exif || {}).iso));
-    this.changed(); this.commit(tone && wb ? '自動' : tone ? '自動光線' : '自動白平衡'); this.renderPanel(); toast('已套用自動調整');
+    this.autoUndo = JSON.stringify(this.edit); this.busy('AI 分析光線中…');
+    setTimeout(() => {
+      let msg = '已套用自動調整';
+      try {
+        const iso = (this.rec.exif || {}).iso;
+        if (wb) { const w = AutoLight.wb(this.ses, this.edit); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; if (w.note) msg += '（' + w.note + '）'; }
+        if (tone) { const r = AutoLight.solve(this.ses, this.edit, { iso }); const info = r._info; delete r._info; Object.assign(this.edit, r);
+          if (wb) { this.edit.vibrance = Math.max(this.edit.vibrance || 0, Math.round(clamp((0.36 - info.after.sat) * 60, 6, 22))); }
+          msg = `已自動調整光線（${info.scene}場景）` + (wb ? '與色彩' : ''); }
+      } catch (e) { console.error(e); const id = imgData(this.ses.aiPrev || this.ses.prev, 320); if (wb) { const w = autoWB(id); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; } if (tone) Object.assign(this.edit, autoTone(id, (this.rec.exif || {}).iso)); }
+      this.busy(null); this.changed(); this.commit(tone && wb ? '自動' : tone ? '自動光線' : '自動白平衡'); this.renderPanel(); toast(msg, 2600);
+    }, 30);
   },
   uprightSeg() {
     return h('div', { class: 'seg srSeg' }, [['off', '關閉'], ['auto', '自動'], ['level', '水平'], ['vertical', '垂直'], ['full', '完整']].map(([k, n]) => h('button', { class: 'btn' + ((this.edit.geo.upright || 'off') === k ? ' on' : ''), onclick: () => this.runUpright(k) }, n)));
@@ -490,6 +498,42 @@ const Editor = {
     const c = this.edit.crop; if (!this.composeUndo) this.composeUndo = JSON.stringify({ x: c.x, y: c.y, w: c.w, h: c.h, ratio: c.ratio });
     Object.assign(c, { x: sg.x, y: sg.y, w: sg.w, h: sg.h, ratio: sg.ratio }); this.composeSel = sg.name; this.changed(); this.commit('AI 構圖：' + sg.name); this.renderPanel();
   },
+  /* ---------- 氛圍感（v1.13）：改變「光線」本身的顏色與光暈，不是在整張照片蓋一層顏色 ---------- */
+  ATM_D: {
+    rays: { exposure: -0.7, contrast: 18, blacks: -20, dehaze: 22, vibrance: 15, saturation: 4, highlights: -25 },
+    golden: { temp: 10, vibrance: 10, highlights: -15, contrast: 6 },
+    jiufen: { highlights: -35, contrast: 8, fade: 6, shadows: 10, 'hsl.sat': [0, 8, 0, -30, -20, -15, 0, 0], 'hsl.hue': [3, 0, 0, 0, 0, 0, 0, 0] },
+    mist: { dehaze: -8, contrast: -6, saturation: -8, fade: 6 }
+  },
+  atmShift(d, sign) {
+    for (const k in d) { const v = d[k];
+      if (Array.isArray(v)) { const a = getP(this.edit, k); for (let i = 0; i < 8; i++) a[i] = clamp(a[i] + sign * v[i], -100, 100); }
+      else this.edit[k] = k === 'exposure' ? Math.round(((this.edit[k] || 0) + sign * v) * 100) / 100 : clamp((this.edit[k] || 0) + sign * v, -100, 100); }
+  },
+  setAtm(kind) {
+    const a = this.edit.atm; if (a.on && a.d) this.atmShift(a.d, -1);
+    if (!kind || (a.on && a.kind === kind)) { a.on = false; a.d = null; }
+    else {
+      const d = clone(this.ATM_D[kind]); a.on = true; a.kind = kind; a.d = d; this.atmShift(d, 1);
+      // 氛圍光會讓暗部與光線更明顯：一併加強色彩雜訊減少，避免彩噪（夜景再加亮度降噪）
+      this.edit.nr.col = Math.max(this.edit.nr.col || 0, kind === 'jiufen' ? 55 : 35); this.edit.nr.csm = Math.max(this.edit.nr.csm || 0, 60);
+      if (kind === 'jiufen') this.edit.nr.lum = Math.max(this.edit.nr.lum || 0, 18);
+    }
+    this.changed(); this.commit(a.on ? '氛圍感：' + ATMOS[kind].name : '關閉氛圍感'); this.renderPanel();
+  },
+  atmCard(b) {
+    const a = this.edit.atm || (this.edit.atm = { on: false, kind: 'rays', amt: 100, glow: 50 });
+    const box = h('div', { class: 'aicard' }, h('h4', null, '🌅 AI 氛圍感'),
+      h('div', { class: 'sub' }, '改變「光線」本身的顏色：亮的地方（陽光、光束、燈光）變成暖色並加上柔和光暈，暗的地方保持乾淨的冷暖對比。依模糊後的亮度判斷範圍，不會產生色塊；同時自動加強彩噪抑制。'),
+      h('div', { class: 'chips' }, Object.keys(ATMOS).map((k) => h('button', { class: 'btn sm' + (a.on && a.kind === k ? ' on' : ''), onclick: () => this.setAtm(k) }, ATMOS[k].name))));
+    if (a.on) {
+      box.append(this.slider('氛圍強度', () => a.amt, (v) => { a.amt = v; this.changed(); }, 0, 150, 1, 100, { onCommit: () => this.commit('氛圍強度') }),
+        this.slider('光暈', () => a.glow, (v) => { a.glow = v; this.changed(); }, 0, 100, 1, 50, { onCommit: () => this.commit('光暈') }),
+        h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => this.setAtm(null) }, '關閉氛圍感')));
+      if (a.kind === 'jiufen') box.append(h('div', { class: 'sub' }, '夜景燈光複雜：已自動加強降噪。若仍有雜訊，建議再開「AI 降噪」。'));
+    }
+    b.append(box);
+  },
   /* ---------- AI 風格推薦 ---------- */
   styleCard(b) {
     const box = h('div', { class: 'aicard' }, h('h4', null, '🎨 AI 風格推薦'), h('div', { class: 'sub' }, '分析這張照片（灰平、昏暗、夜景、人像、風景、天空過曝…），推薦最適合、最驚艷的風格；例如灰灰平平的照片改成黃昏暖調。'));
@@ -521,8 +565,11 @@ const Editor = {
     const id = imgData(this.ses.aiPrev || this.ses.prev, 320); this.ses.ensureSky();
     const ex = this.rec.exif || {}; const base = aiEnhance(id, { iso: ex.iso, wb: this.edit.wb === 'shot' ? autoWB(id) : null });
     const prev = this.edit.aiEnh || {}; if (prev.d) this.aiEnhApply(0);
-    Object.assign(this.edit.aiEnh = this.edit.aiEnh || {}, { d: base, skyOn: this.ses.skyFrac > 0.03 });
-    this.aiEnhApply(80, prev.clear || 0); this.changed(); this.commit('AI 智慧增強'); this.renderPanel();
+    Object.assign(this.edit.aiEnh = this.edit.aiEnh || {}, { d: base, skyOn: false });   // v1.13：不再自動加天空遮色片（邊緣會產生白邊光暈），天空亮部改由閉迴路的「亮部」處理
+    this.aiEnhApply(100, prev.clear || 0);
+    // v1.13：光線部分改用閉迴路求解（實際渲染、量測、修正），過曝救高光、太暗提陰影都算到位
+    try { const r = AutoLight.solve(this.ses, this.edit, { iso: ex.iso }); delete r._info; const ae = this.edit.aiEnh; for (const k of AutoLight.TONE) ae.d[k] = (k === 'exposure' ? Math.round((r[k] - ae.base[k]) * 100) / 100 : Math.round(r[k] - ae.base[k])); this.aiEnhApply(100); } catch (e) { console.warn('AutoLight', e); }
+    this.changed(); this.commit('AI 智慧增強'); this.renderPanel();
     toast(ex.iso >= 1600 ? `AI 增強完成（ISO ${ex.iso}：已節制暗部提亮，建議再開 AI 降噪）` : 'AI 增強完成，可用「強度」調整', 3500);
   },
   aiEnhApply(amt, clear) {

@@ -89,7 +89,9 @@ function rawCanvas(img, k) {
   const LIN = is16 ? RAW_LIN : (() => { const t = new Float32Array(256); for (let i = 0; i < 256; i++) t[i] = eotfN(i / 255); return t; })();
   // 線性值 → 色調曲線後的線性值（平方根索引，暗部精度足夠）
   const VMAX = k * 1.02, NT = 16384, TT = new Float32Array(NT + 2);
-  for (let i = 0; i <= NT + 1; i++) { const q = i / NT, v = q * q * VMAX; TT[i] = eotfN(Math.min(1, rawShoulder(oetfN(v)))); }
+  // 感光元件飽和點（最亮的可記錄值）對應到 0.975，而不是 1.0：高光全部保留層次（8-bit 也不會擠成一片死白），之後壓暗高光才救得回來
+  const tClip = rawShoulder(oetfN(k)), hf = tClip > 0.975 ? (0.975 - 0.8) / (tClip - 0.8) : 1;
+  for (let i = 0; i <= NT + 1; i++) { const q = i / NT, v = q * q * VMAX; let t = rawShoulder(oetfN(v)); if (t > 0.8) t = 0.8 + (t - 0.8) * hf; TT[i] = eotfN(Math.min(1, t)); }
   const tc = (v) => { if (v <= 0) return 0; let f = Math.sqrt(v / VMAX) * NT; if (f >= NT) return TT[NT]; const fi = f | 0; return TT[fi] + (TT[fi + 1] - TT[fi]) * (f - fi); };
   const NO = 16384, OE = new Uint8ClampedArray(NO + 1); for (let i = 0; i <= NO; i++) OE[i] = Math.round(oetfN(i / NO) * 255);
   const rgba = new Uint8ClampedArray(n * 4), o8 = (v) => OE[v <= 0 ? 0 : v >= 1 ? NO : (v * NO + 0.5) | 0];

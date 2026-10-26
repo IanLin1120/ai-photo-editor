@@ -140,7 +140,7 @@ const DEF_EDIT = {
   geo: { upright: 'off', dist: 0, vert: 0, horiz: 0, rot: 0, aspect: 0, scale: 100, ox: 0, oy: 0, constrain: true },
   crop: { x: 0, y: 0, w: 1, h: 1, angle: 0, rot90: 0, flipH: false, flipV: false, ratio: 'free' },
   sky: { on: false, preset: 'cumulus', amt: 100, exp: 0, temp: 0, edge: 40, gaps: 30, haze: 35, relight: 30, pos: 0, flip: false },
-  aiEnh: { amt: 0 },
+  aiEnh: { amt: 0 }, atm: { on: false, kind: 'rays', amt: 100, glow: 50 },
   masks: [], heal: [], loc: null
 };
 const DEF_MASK_ADJ = { exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, temp: 0, tint: 0, saturation: 0, clarity: 0, dehaze: 0, texture: 0, sharp: 0 };

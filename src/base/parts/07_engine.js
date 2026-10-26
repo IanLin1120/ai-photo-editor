@@ -1,6 +1,13 @@
 /* ================= 影像引擎（WebGL2） =================
    管線：P1 幾何+白平衡+曝光 → P2 雜色減少 → P3 細節模糊 → P4 色調/色彩 → P5 遮色片(逐一) → P6 銳化/暈影/顆粒
    預覽與全解析度分塊匯出共用同一組著色器，確保所見即所得。 */
+/* 氛圍感光線（v1.13）：hi＝亮處光線顏色、sh＝暗處顏色（RGB 增益，會自動正規化成不改變亮度）、glow＝光暈顏色×強度、t＝光線範圍（模糊亮度的起訖） */
+const ATMOS = {
+  rays: { name: '晨光穿林', hi: [1.3, 1.08, 0.6], sh: [0.78, 1.08, 0.66], glow: [0.12, 0.085, 0.03], t: [0.1, 0.38], top: 0.65 },
+  golden: { name: '黃昏暖陽', hi: [1.22, 1.03, 0.72], sh: [1.02, 0.99, 0.92], glow: [0.07, 0.05, 0.02], t: [0.15, 0.55], top: 0.4 },
+  jiufen: { name: '九份古風夜', hi: [1.32, 1.0, 0.58], sh: [0.84, 0.98, 1.14], glow: [0.14, 0.08, 0.025], t: [0.18, 0.6], top: 0.3 },
+  mist: { name: '山林霧氣', hi: [1.02, 1.01, 1.0], sh: [0.92, 1.02, 1.06], glow: [0.05, 0.055, 0.06], t: [0.35, 0.95] }
+};
 const Engine = (() => {
   'use strict';
   let gl = null, canvas = null, HF = false, maxTex = 4096;
@@ -59,7 +66,9 @@ void main(){
   if(uTcaOn==1){vec2 p=(s-0.5)*uSSize;float r=length(p)/uLU;float fr=uTca.x+uTca.z*r+uTca2.x*r*r,fb=uTca.y+uTca.w*r+uTca2.y*r*r;
     c.r=smp(0.5+(s-0.5)*fr).r;c.b=smp(0.5+(s-0.5)*fb).b;}
   vec3 l=s2l(c.rgb);vec2 d=(s-0.5)*uSSize/uSD;l*=1.0+uVigCorr*dot(d,d);
-  if(uLVAmt>0.0){float r=length((s-0.5)*uSSize)/uLVU;float r2=r*r;float v=1.0+uLV.x*r2+uLV.y*r2*r2+uLV.z*r2*r2*r2;l*=mix(1.0,1.0/max(v,0.05),uLVAmt);}
+  if(uLVAmt>0.0){float r=length((s-0.5)*uSSize)/uLVU;float r2=r*r;float v=1.0+uLV.x*r2+uLV.y*r2*r2+uLV.z*r2*r2*r2;float gv=mix(1.0,1.0/max(v,0.05),uLVAmt);
+    /* 暗角補償：已在高光肩部的亮處（天空邊角）少補一點，避免補到超過白點而死白 */
+    if(gv>1.0)gv=mix(gv,1.0,smoothstep(0.55,0.97,dot(l,LUMA)));l*=gv;}
   /* 天空置換：低解析度天空遮罩 × 原圖亮度細化邊緣（樹梢、建築輪廓） */
   if(uSkyOn==1){
     float m=texture(uSkyM,clamp(s,0.0,1.0)).r;float L=dot(c.rgb,LUMA);
@@ -127,7 +136,7 @@ void main(){
   /* 主色調/色彩 */
   const FS_MAIN = HEAD + `
 uniform sampler2D uB,uT,uGuide,uLut;uniform int uHasT;
-uniform vec4 uTone;uniform float uBlacks,uRoll;uniform vec4 uFx; // con,hl,sh,wh ; clarity,texture,dehaze,fade
+uniform vec4 uTone;uniform float uBlacks,uRoll,uAtmA;uniform vec3 uAtmHi,uAtmSh,uAtmGlow;uniform vec2 uAtmT;uniform float uAtmTop;uniform vec4 uFx; // con,hl,sh,wh ; clarity,texture,dehaze,fade
 uniform vec3 uAtm;uniform float uVib,uSat;
 uniform vec4 uHH[2],uHS[2],uHL[2],uBW[2];uniform int uMono;
 uniform vec4 uGS,uGM,uGH,uGG;uniform vec2 uGB;uniform vec3 uFringe;uniform vec4 uTint; // tint rgb, mono toning strength
@@ -164,6 +173,14 @@ void main(){
   /* 曝光加亮時，高光柔和收邊（Lightroom 的曝光在色調曲線之前，亮部不會一下子衝白） */
   if(uRoll>0.0&&L>0.8){float r0=0.8+0.2*(1.0-exp(-(L-0.8)/0.2));L=mix(L,r0,uRoll);}
   float Yn=s2l1(max(L,0.0));vec3 l2=lin*(Yn/Y);
+  /* 氛圍光（v1.13）：用模糊過的亮度決定「光」與「暗」的範圍，以相乘方式改變光線顏色並加上柔和光暈，
+     權重平滑（不看單一像素），所以不會產生色塊，也不會把雜訊放大成彩噪 */
+  if(uAtmA>0.0){
+    float lw=smoothstep(uAtmT.x,uAtmT.y,Lc)*(1.0-uAtmTop*smoothstep(0.75,1.0,Lc))*uAtmA,sw=(1.0-smoothstep(0.04,0.42,Lb))*uAtmA;
+    l2*=mix(vec3(1.0),uAtmHi,lw);l2*=mix(vec3(1.0),uAtmSh,sw);
+    float gl=max(Lc-uAtmT.x,0.0)/max(1.0-uAtmT.x,0.05);l2+=uAtmGlow*(gl*gl)*uAtmA;
+    Yn=dot(l2,LUMA);
+  }
   /* 超出白點：保持亮度與色相、只降低彩度（不會因單一色版先裁切而偏色） */
   float mx=max(l2.r,max(l2.g,l2.b));if(mx>1.0){if(Yn<0.999){float tq=(1.0-Yn)/(mx-Yn);l2=Yn+(l2-Yn)*tq;}else l2=vec3(1.0);}
   vec3 p=l2s(l2);
@@ -197,9 +214,18 @@ void main(){
   /* 褪色 */
   if(uFx.w!=0.0)p=p*(1.0-uFx.w*0.12)+uFx.w*0.08;
   /* 移除色差（紫邊/綠邊） */
-  if(uFringe.z>0.0&&uHasT==1){vec2 tb=texture(uT,tc).rg;float e=clamp(abs(Lpre-tb.g)*14.0+length(vec2(dFdx(tb.g),dFdy(tb.g)))*24.0,0.0,1.0);
-    vec3 hv=rgb2hsv(clamp(p,0.0,1.0));float pu=1.0-smoothstep(0.05,0.11,abs(hv.x-0.79));float gr=1.0-smoothstep(0.05,0.11,abs(hv.x-0.36));
-    float k=clamp(e*(pu*uFringe.x+gr*uFringe.y)*1.5,0.0,1.0);p=mix(p,vec3(dot(p,LUMA)),k);}
+  if(uFringe.z>0.0&&uHasT==1){
+    /* v1.13 加強版：除了邊緣本身，也偵測「緊鄰大面積高光」的位置（逆光樹枝、窗框），紫邊色相範圍放寬到藍紫～洋紅，
+       綠邊改為青綠色（避開一般樹葉的黃綠），並且只處理有彩度的像素 */
+    vec2 px1=1.0/uWork;float rr=max(1.5,4.0*uSigma);float mxN=0.0;
+    for(int i=0;i<8;i++){float an=float(i)*0.7854;vec2 of=vec2(cos(an),sin(an))*rr*px1;mxN=max(mxN,texture(uT,tc+of).r);mxN=max(mxN,texture(uT,tc+of*2.2).r);}
+    float tg=texture(uT,tc).g;
+    float e=clamp(abs(Lpre-tg)*14.0+length(vec2(dFdx(tg),dFdy(tg)))*24.0,0.0,1.0);
+    e=max(e,clamp((mxN-Lpre)*3.5,0.0,1.0)*smoothstep(0.4,0.75,mxN));
+    vec3 hv=rgb2hsv(clamp(p,0.0,1.0));
+    float pu=1.0-smoothstep(0.09,0.16,abs(hv.x-0.80)),gr=1.0-smoothstep(0.06,0.11,abs(hv.x-0.47));
+    float k=clamp(e*smoothstep(0.05,0.16,hv.y)*(pu*uFringe.x+gr*uFringe.y)*2.2,0.0,1.0);
+    p=mix(p,vec3(dot(p,LUMA)),k);}
   o=vec4(p,B.a);
 }`;
 
@@ -541,6 +567,9 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
     use(P.main); common();
     set('uB', cur); set('uT', T); set('uHasT', needT ? 1 : 0); set('uGuide', job.guide); set('uLut', buildLut(e.curve));
     set('uTone', [e.contrast / 100, e.highlights / 100, e.shadows / 100, e.whites / 100]); set('uBlacks', e.blacks / 100); set('uRoll', Math.min(1, Math.max(0, e.exposure || 0) / 0.6));
+    { const A = e.atm && e.atm.on ? ATMOS[e.atm.kind] : null, k = A ? (e.atm.amt == null ? 100 : e.atm.amt) / 100 : 0;
+      const nz = (c) => { const y = c[0] * LUMA[0] + c[1] * LUMA[1] + c[2] * LUMA[2]; return c.map((v) => v / y); };
+      set('uAtmA', k); set('uAtmHi', A ? nz(A.hi) : [1, 1, 1]); set('uAtmSh', A ? nz(A.sh) : [1, 1, 1]); set('uAtmGlow', A ? A.glow.map((v) => v * (e.atm.glow == null ? 1 : e.atm.glow / 50)) : [0, 0, 0]); set('uAtmT', A ? A.t : [0.4, 0.9]); set('uAtmTop', A ? A.top || 0 : 0); }
     set('uFx', [e.clarity / 100, e.texture / 100, e.dehaze / 100, (e.fade || 0) / 100]); set('uAtm', job.atm);
     set('uVib', e.vibrance / 100); set('uSat', e.saturation / 100);
     const h8 = (a) => a.map((v) => v / 100);

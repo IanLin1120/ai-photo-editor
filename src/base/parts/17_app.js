@@ -455,12 +455,13 @@ const Settings = {
     if (isApp) {
       const pm = NAT.json('perms') || {};
       root.append(card('🔐 權限', h('div', { class: 'lab' }, h('span', null, '相片與位置中繼資料', h('div', { class: 'sub' }, '讀取原始 GPS 等 EXIF 資訊需要「相片」與「媒體位置」權限')), pm.media ? h('span', { class: 'sub' }, '✓ 已允許') : h('button', { class: 'btn sm pri', onclick: () => NAT.call('requestPerm', 'media') }, '允許')),
+        h('div', { class: 'lab' }, h('span', null, '定位', h('div', { class: 'sub' }, '地點地圖的「📍 目前位置」使用')), !window.AIP2 ? h('span', { class: 'sub' }, '需安裝 v1.13 以上 APK') : AIP2.has() ? h('span', { class: 'sub' }, '✓ 已允許') : h('button', { class: 'btn sm pri', onclick: () => AIP2.request() }, '允許')),
         h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => NAT.call('openAppSettings') }, '開啟系統設定'))));
     }
     root.append(card('ℹ️ 關於',
       h('div', { class: 'kv2' }, h('b', null, '版本'), h('span', null, (isApp && NAT.call('version')) || APP_VERSION), h('b', null, 'GPU'), h('span', null, Editor.glInfo ? `WebGL2・最大貼圖 ${Editor.glInfo.maxTex}・${Editor.glInfo.HF ? '16-bit 浮點管線' : '8-bit 管線'}` : (Editor.glError || '—'))),
       h('div', { class: 'note' }, '所有影像處理（含 AI 降噪）都在裝置上完成，相片不會上傳到任何伺服器。'),
-      h('div', { class: 'sub' }, '開源元件：Intel Open Image Denoise 權重（Apache-2.0）、TensorFlow.js（Apache-2.0）、MozJPEG（BSD/IJG）。')));
+      h('div', { class: 'sub' }, '開源元件：Intel Open Image Denoise 權重（Apache-2.0）、TensorFlow.js（Apache-2.0）、MozJPEG（BSD/IJG）、MapLibre GL JS（BSD-3）。地圖：OpenFreeMap © OpenMapTiles，資料 © OpenStreetMap 貢獻者。')));
   }
 };
 

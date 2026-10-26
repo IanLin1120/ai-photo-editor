@@ -60,7 +60,7 @@ const MS = (() => {
     const ZH = ['coalesce', ['get', 'name:zh-Hant'], ['get', 'name:zh-TW'], ['get', 'name'], ['get', 'name:zh'], ['get', 'name_en']];
     st.layers.forEach((l) => { const tf = l.layout && l.layout['text-field']; if (tf == null) return; const js = JSON.stringify(tf); if (/name/.test(js) && !/"ref"/.test(js)) l.layout['text-field'] = ZH; });
     const v = lsGet('aip.mapView', { c: [120.96, 23.8], z: 7 });
-    S.map = new maplibregl.Map({ container: 'msMap', style: st, center: v.c, zoom: v.z, attributionControl: { compact: true }, maxPitch: 70, localIdeographFontFamily: '"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif' });
+    S.map = new maplibregl.Map({ container: 'msMap', style: st, center: v.c, zoom: v.z, attributionControl: false, maxPitch: 70, localIdeographFontFamily: '"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif' });
     S.map.on('moveend', () => lsSet('aip.mapView', { c: S.map.getCenter().toArray(), z: S.map.getZoom() }));
     let lt = 0, sx = 0, sy = 0; const cv = S.map.getCanvasContainer();
     cv.addEventListener('touchstart', (e) => { clearTimeout(lt); if (e.touches.length !== 1) return; sx = e.touches[0].clientX; sy = e.touches[0].clientY; lt = setTimeout(() => { const r = cv.getBoundingClientRect(), ll = S.map.unproject([sx - r.left, sy - r.top]); dropAt(ll.lat, ll.lng); }, 600); }, { passive: true });
@@ -133,7 +133,7 @@ const MS = (() => {
     navigator.geolocation.getCurrentPosition(async (p) => { const { latitude: lat, longitude: lon } = p.coords;
       if (S.map) { if (S.me) S.me.remove(); S.me = new maplibregl.Marker({ element: h('div', { class: 'msMe' }) }).setLngLat([lon, lat]).addTo(S.map); S.map.easeTo({ center: [lon, lat], zoom: Math.max(S.map.getZoom(), 16) }); }
       dropAt(lat, lon); },
-    (e) => toast(e.code === 1 ? '請允許定位權限' : '定位失敗：' + e.message, 4000), { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+    (e) => { if (e.code === 1) { if (window.AIP2 && !AIP2.has()) AIP2.request(); toast('請允許定位權限（也可到 設定 → 權限 → 定位）', 4000); } else toast('定位失敗：' + e.message, 4000); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
   }
   /* opt：{ init:{lat,lon,name}, count, title, applyText, onPick(loc) } */
   function open(opt) {
