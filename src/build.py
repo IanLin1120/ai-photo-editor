@@ -3,7 +3,7 @@
 用法：VER=1.11.0 CODE=19 MINAPK=1.11.0 NOTES="…" python3 src/build.py  → src/dist/index.html、src/dist/gh/（把 gh 裡的檔案放到儲存庫根目錄）"""
 import os, json, shutil
 H = os.path.dirname(os.path.abspath(__file__)); W = H + '/web/'
-VER = os.environ.get('VER', '1.11.0'); CODE = int(os.environ.get('CODE', '19')); MINAPK = os.environ.get('MINAPK', '1.11.0'); NOTES = os.environ.get('NOTES', '')
+VER = os.environ.get('VER', '1.12.0'); CODE = int(os.environ.get('CODE', '20')); MINAPK = os.environ.get('MINAPK', '1.11.0'); NOTES = os.environ.get('NOTES', '')
 rd = lambda f: open(W + f, encoding='utf8').read()
 P = H + '/base/parts/'; s = ''.join(open(P + f, encoding='utf8').read() for f in json.load(open(P + 'order.json')))
 def rep(old, new, cnt=1):
