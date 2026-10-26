@@ -4,7 +4,7 @@
 <script>/* 線上更新開機程式：手機上若已下載比 APK 內建更新的介面版本，就改用新版（存在 IndexedDB）。
    新版連續兩次沒有正常開啟 → 自動退回 APK 內建版本。網址加上 #builtin 也會強制使用內建版本。 */
 (function () {
-  var B = '1.11.0'; window.APP_BUILTIN = B;
+  var B = '1.12.0'; window.APP_BUILTIN = B;
   if (window.__OTA || location.hash.indexOf('builtin') >= 0) return;
   var v = null; try { v = JSON.parse(localStorage.getItem('aip.ota') || 'null'); } catch (e) {}
   function gt(a, b) { a = String(a).split('.').map(Number); b = String(b).split('.').map(Number); for (var i = 0; i < Math.max(a.length, b.length); i++) { var p = a[i] || 0, q = b[i] || 0; if (p !== q) return p > q; } return false; }
@@ -1394,7 +1394,7 @@ vec3 hsv2rgb(vec3 c){vec3 p=abs(fract(c.xxx+vec3(1.0,2.0/3.0,1.0/3.0))*6.0-3.0);
 vec3 wbGain(float t,float m){vec3 g=vec3(exp(0.36*t),exp(-0.24*m),exp(-0.36*t));return g/dot(g,LUMA);}
 /* 幾何：輸出座標 → 原圖座標 */
 uniform vec4 uCrop;uniform vec2 uBSize;uniform float uBD;uniform mat3 uInvT;uniform int uRot90;uniform vec2 uFlip;uniform vec2 uSSize;uniform float uSD,uDistK;
-uniform int uLM;uniform vec3 uLK;uniform float uLU,uLAmt;
+uniform int uLM;uniform vec3 uLK;uniform float uLU,uLAmt,uLZ;
 vec2 lensDist(vec2 s){if(uLM==0)return s;vec2 p=(s-0.5)*uSSize;float r=length(p)/uLU;float f;
   if(uLM==1)f=uLK.x*r*r*r+uLK.y*r*r+uLK.z*r+1.0-uLK.x-uLK.y-uLK.z;else if(uLM==2)f=1.0-uLK.x+uLK.x*r*r;else f=1.0+uLK.x*r*r+uLK.y*r*r*r*r;
   return 0.5+p*mix(1.0,f,uLAmt)/uSSize;}
@@ -1402,7 +1402,7 @@ vec2 outToSrc(vec2 pn){
   vec2 t=uCrop.xy+pn*uCrop.zw;vec2 c=(t-0.5)*uBSize/uBD;vec3 h=uInvT*vec3(c,1.0);c=h.xy/h.z;vec2 b=c*uBD/uBSize+0.5;
   if(uFlip.x>0.5)b.x=1.0-b.x;if(uFlip.y>0.5)b.y=1.0-b.y;
   vec2 s=b;if(uRot90==1)s=vec2(b.y,1.0-b.x);else if(uRot90==2)s=1.0-b;else if(uRot90==3)s=vec2(1.0-b.y,b.x);
-  s=lensDist(s);vec2 d=(s-0.5)*uSSize/uSD;float r2=dot(d,d);return 0.5+(s-0.5)*(1.0+uDistK*r2);
+  s=0.5+(s-0.5)*(uLZ>0.0?uLZ:1.0);s=lensDist(s);vec2 d=(s-0.5)*uSSize/uSD;float r2=dot(d,d);return 0.5+(s-0.5)*(1.0+uDistK*r2);
 }
 vec2 PN(){return (uOutOrigin+gl_FragCoord.xy)/uOutSize;}
 vec2 TC(){return gl_FragCoord.xy/uWork;}
@@ -1496,7 +1496,7 @@ void main(){
   /* 主色調/色彩 */
   const FS_MAIN = HEAD + `
 uniform sampler2D uB,uT,uGuide,uLut;uniform int uHasT;
-uniform vec4 uTone;uniform float uBlacks;uniform vec4 uFx; // con,hl,sh,wh ; clarity,texture,dehaze,fade
+uniform vec4 uTone;uniform float uBlacks,uRoll;uniform vec4 uFx; // con,hl,sh,wh ; clarity,texture,dehaze,fade
 uniform vec3 uAtm;uniform float uVib,uSat;
 uniform vec4 uHH[2],uHS[2],uHL[2],uBW[2];uniform int uMono;
 uniform vec4 uGS,uGM,uGH,uGG;uniform vec2 uGB;uniform vec3 uFringe;uniform vec4 uTint; // tint rgb, mono toning strength
@@ -1515,16 +1515,26 @@ void main(){
   float Y=max(dot(lin,LUMA),1.0e-6);float L=l2s1(Y);float Lb=G.g,Lc=G.r;float Lm=mix(L,Lb,0.72);
   float Lpre=l2s1(dot(B.rgb,LUMA));
   float hl=uTone.y,sh=uTone.z;
-  L+=hl*0.32*smoothstep(0.45,0.97,Lm)*(hl<0.0?L:(1.05-L));
-  L+=sh*0.40*(1.0-smoothstep(0.03,0.55,Lm))*(sh>0.0?(1.0-L)*0.9+0.05:L);
+  /* 亮部／陰影（v1.12，與 Lightroom 相同的局部方式）：在「邊緣保留的底層亮度」上計算調整量，再以線性增益乘回像素，
+     局部對比與色彩比例都保留 → 陰影拉亮不發灰發虛、亮部壓暗不偏色；邊緣處改用像素本身亮度，避免光暈 */
+  if(hl!=0.0||sh!=0.0){
+    float dB=L-Lb;float bb=clamp(Lb+dB*(1.0-exp(-dB*dB/0.02)),0.0,1.2);float b2=bb;
+    b2+=hl*0.27*smoothstep(0.48,1.0,bb)*(hl<0.0?bb*0.9:(1.05-bb));
+    b2+=sh*0.23*(1.0-smoothstep(0.03,0.52,bb))*(sh>0.0?(1.0-bb)*0.85+0.04:bb);
+    float g=s2l1(max(b2,0.0))/max(s2l1(bb),1.0e-5);g=clamp(g,0.03,24.0);
+    L=l2s1(Y*g);
+  }
   L+=uTone.w*0.22*smoothstep(0.35,1.0,L);
   L+=uBlacks*0.18*(1.0-smoothstep(0.0,0.45,L));
   float Lk=clamp(L,0.0,1.0);L+=uTone.x*0.45*(L-0.46)*4.0*Lk*(1.0-Lk);
   float midw=1.0-pow(abs(2.0*clamp(L,0.0,1.0)-1.0),2.0);
   L+=uFx.x*(uFx.x>0.0?0.6:0.55)*(Lpre-Lc)*midw;
   if(uHasT==1){vec2 tb=texture(uT,tc).rg;L+=uFx.y*(uFx.y>0.0?1.1:0.85)*(Lpre-tb.r);}
+  /* 曝光加亮時，高光柔和收邊（Lightroom 的曝光在色調曲線之前，亮部不會一下子衝白） */
+  if(uRoll>0.0&&L>0.8){float r0=0.8+0.2*(1.0-exp(-(L-0.8)/0.2));L=mix(L,r0,uRoll);}
   float Yn=s2l1(max(L,0.0));vec3 l2=lin*(Yn/Y);
-  float mx=max(l2.r,max(l2.g,l2.b));if(mx>1.0)l2=mix(l2,vec3(max(Yn,1.0)),smoothstep(1.0,3.0,mx)*0.75);
+  /* 超出白點：保持亮度與色相、只降低彩度（不會因單一色版先裁切而偏色） */
+  float mx=max(l2.r,max(l2.g,l2.b));if(mx>1.0){if(Yn<0.999){float tq=(1.0-Yn)/(mx-Yn);l2=Yn+(l2-Yn)*tq;}else l2=vec3(1.0);}
   vec3 p=l2s(l2);
   if(uLut3Amt>0.0)p=mix(p,lut3(p),uLut3Amt);
   /* 色調曲線 */
@@ -1771,7 +1781,11 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
       lens = { m: 0, k: [0, 0, 0], u: dmm / Math.sqrt(1 + asp * asp) / 2 * pxmm, amt: (pr.d == null ? 100 : pr.d) / 100, vu: dmm / 2 * pxmm, vig: P.vig, vamt: (pr.v == null ? 100 : pr.v) / 100, tca: pr.tca !== false ? P.tca : null };
       const d = P.dist; if (d && !P.fisheye) { if (d[1] === 'p') { lens.m = 1; lens.k = [d[2], d[3], d[4]]; } else if (d[1] === '3') { lens.m = 2; lens.k = [d[2], 0, 0]; } else if (d[1] === '5') { lens.m = 3; lens.k = [d[2], d[3], 0]; } }
     }
-    return { SW, SH, BW, BH, BD, F, Inv, rot, flipH: !!c.flipH, flipV: !!c.flipV, crop: [c.x, c.y, c.w, c.h], distK, SD, lens,
+    const G0 = { SW, SH, SD, distK, lens, lz: 1 };
+    // 鏡頭校正／變形校正後邊緣會出現空白（白邊）：與 Lightroom 相同，自動放大到剛好填滿畫面
+    if ((lens && lens.m) || distK) { let worst = 1; for (let i = 0; i <= 24; i++) { const t = i / 24; for (const q of [[t, 0], [t, 1], [0, t], [1, t]]) { const m = sensorMap(G0, q); worst = Math.max(worst, Math.abs(m[0] - .5) / .5, Math.abs(m[1] - .5) / .5); } }
+      if (worst > 1.0005) { let lo = 1 / worst * 0.9, hi = 1; for (let k = 0; k < 18; k++) { const z = (lo + hi) / 2; G0.lz = z; let ok = true; for (let i = 0; i <= 24 && ok; i++) { const t = i / 24; for (const q of [[t, 0], [t, 1], [0, t], [1, t]]) { const m = sensorMap(G0, q); if (m[0] < -1e-4 || m[0] > 1.0001 || m[1] < -1e-4 || m[1] > 1.0001) { ok = false; break; } } } if (ok) lo = z; else hi = z; } G0.lz = lo; } }
+    return { SW, SH, BW, BH, BD, F, Inv, rot, flipH: !!c.flipH, flipV: !!c.flipV, crop: [c.x, c.y, c.w, c.h], distK, SD, lens, lz: G0.lz,
       invT: [Inv[0], Inv[3], Inv[6], Inv[1], Inv[4], Inv[7], Inv[2], Inv[5], Inv[8]],
       OW: Math.max(1, Math.round(c.w * BW)), OH: Math.max(1, Math.round(c.h * BH)) };
   }
@@ -1787,6 +1801,7 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
   }
   function lensF(G, r) { const L = G.lens, k = L.k; const f = L.m === 1 ? k[0] * r * r * r + k[1] * r * r + k[2] * r + 1 - k[0] - k[1] - k[2] : L.m === 2 ? 1 - k[0] + k[0] * r * r : 1 + k[0] * r * r + k[1] * r * r * r * r; return 1 + (f - 1) * L.amt; }
   function sensorMap(G, s) {
+    if (G.lz && G.lz !== 1) s = [.5 + (s[0] - .5) * G.lz, .5 + (s[1] - .5) * G.lz];
     if (G.lens && G.lens.m) { const px = (s[0] - .5) * G.SW, py = (s[1] - .5) * G.SH; const f = lensF(G, Math.hypot(px, py) / G.lens.u); s = [.5 + px * f / G.SW, .5 + py * f / G.SH]; }
     const dx = (s[0] - .5) * G.SW / G.SD, dy = (s[1] - .5) * G.SH / G.SD, f = 1 + G.distK * (dx * dx + dy * dy);
     return [.5 + (s[0] - .5) * f, .5 + (s[1] - .5) * f];
@@ -1811,7 +1826,7 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
   function setGeoUniforms(G) {
     set('uCrop', G.crop); set('uBSize', [G.BW, G.BH]); set('uBD', G.BD); set('uInvT', G.invT);
     set('uRot90', G.rot); set('uFlip', [G.flipH ? 1 : 0, G.flipV ? 1 : 0]); set('uSSize', [G.SW, G.SH]); set('uSD', G.SD); set('uDistK', G.distK);
-    const L = G.lens; set('uLM', L ? L.m : 0); set('uLK', L ? L.k : [0, 0, 0]); set('uLU', L ? L.u : 1); set('uLAmt', L ? L.amt : 0);
+    const L = G.lens; set('uLM', L ? L.m : 0); set('uLK', L ? L.k : [0, 0, 0]); set('uLU', L ? L.u : 1); set('uLAmt', L ? L.amt : 0); set('uLZ', G.lz || 1);
   }
 
   /* ---------- 參數 → uniform ---------- */
@@ -1894,7 +1909,7 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
     // P4
     use(P.main); common();
     set('uB', cur); set('uT', T); set('uHasT', needT ? 1 : 0); set('uGuide', job.guide); set('uLut', buildLut(e.curve));
-    set('uTone', [e.contrast / 100, e.highlights / 100, e.shadows / 100, e.whites / 100]); set('uBlacks', e.blacks / 100);
+    set('uTone', [e.contrast / 100, e.highlights / 100, e.shadows / 100, e.whites / 100]); set('uBlacks', e.blacks / 100); set('uRoll', Math.min(1, Math.max(0, e.exposure || 0) / 0.6));
     set('uFx', [e.clarity / 100, e.texture / 100, e.dehaze / 100, (e.fade || 0) / 100]); set('uAtm', job.atm);
     set('uVib', e.vibrance / 100); set('uSat', e.saturation / 100);
     const h8 = (a) => a.map((v) => v / 100);
@@ -2974,7 +2989,7 @@ const RawDec = {
     };
     const run = async () => {
       try {
-        await this.call('open', bytes, { useCameraWb: true, outputColor: 1, outputBps: 8, userQual: CFG.rawQ === 'fast' ? 2 : 3, highlight: 2, userFlip: -1, autoBrightThr: 0.01, halfSize: !!half });
+        await this.call('open', bytes, { useCameraWb: true, outputColor: 1, outputBps: 16, noAutoBright: true, userQual: CFG.rawQ === 'fast' ? 2 : 3, highlight: 2, userFlip: -1, halfSize: !!half });
         const meta = await this.call('metadata', true);
         const img = await this.call('imageData');
         if (!img || !img.data) throw new Error('無法解碼此 RAW 檔');
@@ -2989,9 +3004,72 @@ const RawDec = {
   },
   dispose() { clearTimeout(this.idleT); this.uses = 0; if (this.worker) { this.worker.terminate(); this.worker = null; } }
 };
-function rawCanvas(img) {
-  const W = img.width, H = img.height, n = W * H; const rgba = new Uint8ClampedArray(n * 4); const src = img.data; const ch = img.colors || 3;
-  for (let i = 0, j = 0; i < n; i++, j += ch) { const k = i * 4; rgba[k] = src[j]; rgba[k + 1] = src[j + 1]; rgba[k + 2] = src[j + 2]; rgba[k + 3] = 255; }
+/* ---------- RAW → 畫面（v1.12 起，與 Lightroom 相同的處理方式） ----------
+   舊版用 LibRaw「自動亮度」直接輸出 8-bit：會強制裁掉最亮 1% 的高光（各色版裁切程度不同 → 壓暗高光時偏色），
+   而且亮度每張不固定。現在改為：16-bit、不自動亮度 → 轉線性 → 依相機內嵌 JPEG 對齊中間調曝光（每張固定一個倍率，
+   預覽與全解析度一致）→ 以亮度為準的柔和高光肩部（保留高光層次、不改變色相）→ 超出色域時保持亮度降低彩度。 */
+const RAW_LIN = (() => { const t = new Float32Array(65536); for (let i = 0; i < 65536; i++) { const v = i / 65535; t[i] = v < 0.081 ? v / 4.5 : Math.pow((v + 0.099) / 1.099, 1 / 0.45); } return t; })();
+const RAW_DEF_K = 9;   // 沒有內嵌預覽可對齊時的預設曝光倍率（Sony／Ricoh 實測中位數）
+const oetfN = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055), eotfN = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+/* 基礎色調曲線（sRGB 編碼值，輸入可大於 1 = 高光餘裕）：由 Sony A6700／GR III 的 RAW 與機內 JPEG 實測擬合，
+   暗部略壓（通透不灰）、中間調不變、0.55 以上柔和肩部一路收到 1（高光不硬切、壓暗高光時有層次且不偏色） */
+const RAW_CURVE = (() => {
+  const P = [[0, 0], [0.05, 0.032], [0.10, 0.078], [0.18, 0.158], [0.30, 0.292], [0.42, 0.425], [0.52, 0.522], [0.64, 0.623], [0.76, 0.715], [0.90, 0.80], [1.05, 0.86], [1.25, 0.915], [1.5, 0.958], [1.9, 0.988], [2.5, 1.0], [3.6, 1.0]];
+  const n = P.length, xs = P.map((p) => p[0]), ys = P.map((p) => p[1]), d = [], m = [];
+  for (let i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+  m[0] = d[0]; m[n - 1] = d[n - 2]; for (let i = 1; i < n - 1; i++) { const h0 = xs[i] - xs[i - 1], h1 = xs[i + 1] - xs[i], w1 = 2 * h1 + h0, w2 = h1 + 2 * h0; m[i] = d[i - 1] * d[i] <= 0 ? 0 : (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]); }
+  const N = 4096, XM = 3.6, T = new Float32Array(N + 1);
+  for (let j = 0; j <= N; j++) { const x = j / N * XM; let i = 0; while (i < n - 2 && x > xs[i + 1]) i++; const hh = xs[i + 1] - xs[i], t = (x - xs[i]) / hh, t2 = t * t, t3 = t2 * t;
+    T[j] = (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * hh * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * hh * m[i + 1]; }
+  for (let j = 1; j <= N; j++) T[j] = Math.max(T[j], T[j - 1]);
+  return { T, N, XM };
+})();
+function rawShoulder(x) { const C = RAW_CURVE; if (x >= C.XM) return 1; const f = x / C.XM * C.N, i = f | 0; return C.T[i] + (C.T[Math.min(i + 1, C.N)] - C.T[i]) * (f - i); }
+function rawShoulderInv(y) { const C = RAW_CURVE; if (y >= C.T[C.N] - 1e-4) return 2.5; let lo = 0, hi = C.N; while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (C.T[mid] < y) lo = mid; else hi = mid; } const a = C.T[lo], b = C.T[hi]; return (lo + (b > a ? (y - a) / (b - a) : 0)) / C.N * C.XM; }
+/* 依內嵌 JPEG（相機的機內處理）求曝光倍率：比對 30/50/70 百分位亮度 */
+function rawLumPct(img, ps) {
+  const src = img.data, ch = img.colors || 3, W = img.width, H = img.height, a = [], st = Math.max(1, Math.round(Math.sqrt(W * H * 0.36 / 120000)));
+  for (let y = Math.round(H * 0.2); y < H * 0.8; y += st) for (let x = Math.round(W * 0.2); x < W * 0.8; x += st) { const j = (y * W + x) * ch; a.push(0.2126 * RAW_LIN[src[j]] + 0.7152 * RAW_LIN[src[j + 1]] + 0.0722 * RAW_LIN[src[j + 2]]); }
+  a.sort((x, y) => x - y); return ps.map((p) => a[Math.min(a.length - 1, Math.floor(p * a.length))]);
+}
+function canvasLumPct(cv, ps) {
+  const s = Math.min(1, 640 / Math.max(cv.width, cv.height)), c = mkCanvas(cv.width * s, cv.height * s), x = c.getContext('2d'); x.drawImage(cv, 0, 0, c.width, c.height);
+  const d = x.getImageData(Math.round(c.width * 0.2), Math.round(c.height * 0.2), Math.round(c.width * 0.6), Math.round(c.height * 0.6)).data, a = [];
+  for (let i = 0; i < d.length; i += 4) a.push(0.2126 * eotfN(d[i] / 255) + 0.7152 * eotfN(d[i + 1] / 255) + 0.0722 * eotfN(d[i + 2] / 255));
+  a.sort((x, y) => x - y); return ps.map((p) => a[Math.min(a.length - 1, Math.floor(p * a.length))]);
+}
+function rawExposureK(img, refCanvas) {
+  if (!refCanvas) return RAW_DEF_K;
+  try {
+    const ps = [0.3, 0.5, 0.7], ours = rawLumPct(img, ps), ref = canvasLumPct(refCanvas, ps), w = [1, 2, 1]; let lk = 0, ws = 0;
+    for (let i = 0; i < 3; i++) { if (ours[i] < 1e-5 || ref[i] < 1e-4) continue; const tgt = Math.pow(Math.max(0, (Math.min(rawShoulderInv(oetfN(ref[i])), 2.4) + 0.055) / 1.055), 2.4); lk += w[i] * Math.log(tgt / ours[i]); ws += w[i]; }
+    return ws ? clamp(Math.exp(lk / ws), 0.4, 16) : RAW_DEF_K;
+  } catch (e) { console.warn('rawExposureK', e); return RAW_DEF_K; }
+}
+function rawCanvas(img, k) {
+  k = k || RAW_DEF_K;
+  const W = img.width, H = img.height, n = W * H, ch = img.colors || 3, src = img.data, is16 = src.BYTES_PER_ELEMENT === 2;
+  const LIN = is16 ? RAW_LIN : (() => { const t = new Float32Array(256); for (let i = 0; i < 256; i++) t[i] = eotfN(i / 255); return t; })();
+  // 線性值 → 色調曲線後的線性值（平方根索引，暗部精度足夠）
+  const VMAX = k * 1.02, NT = 16384, TT = new Float32Array(NT + 2);
+  for (let i = 0; i <= NT + 1; i++) { const q = i / NT, v = q * q * VMAX; TT[i] = eotfN(Math.min(1, rawShoulder(oetfN(v)))); }
+  const tc = (v) => { if (v <= 0) return 0; let f = Math.sqrt(v / VMAX) * NT; if (f >= NT) return TT[NT]; const fi = f | 0; return TT[fi] + (TT[fi + 1] - TT[fi]) * (f - fi); };
+  const NO = 16384, OE = new Uint8ClampedArray(NO + 1); for (let i = 0; i <= NO; i++) OE[i] = Math.round(oetfN(i / NO) * 255);
+  const rgba = new Uint8ClampedArray(n * 4), o8 = (v) => OE[v <= 0 ? 0 : v >= 1 ? NO : (v * NO + 0.5) | 0];
+  for (let i = 0, j = 0, q = 0; i < n; i++, j += ch, q += 4) {
+    const r = LIN[src[j]] * k, g = LIN[src[j + 1]] * k, b = LIN[src[j + 2]] * k;
+    let R, G, B;
+    if (r >= g) {
+      if (g >= b) { R = tc(r); B = tc(b); G = r > b ? B + (R - B) * (g - b) / (r - b) : R; }         // r ≥ g ≥ b
+      else if (r >= b) { R = tc(r); G = tc(g); B = r > g ? G + (R - G) * (b - g) / (r - g) : R; }    // r ≥ b > g
+      else { B = tc(b); G = tc(g); R = b > g ? G + (B - G) * (r - g) / (b - g) : B; }                 // b > r ≥ g
+    } else {
+      if (r >= b) { G = tc(g); B = tc(b); R = g > b ? B + (G - B) * (r - b) / (g - b) : G; }         // g > r ≥ b
+      else if (g >= b) { G = tc(g); R = tc(r); B = g > r ? R + (G - R) * (b - r) / (g - r) : G; }    // g ≥ b > r
+      else { B = tc(b); R = tc(r); G = b > r ? R + (B - R) * (g - r) / (b - r) : B; }                 // b > g > r
+    }
+    rgba[q] = o8(R); rgba[q + 1] = o8(G); rgba[q + 2] = o8(B); rgba[q + 3] = 255;
+  }
   const cv = mkCanvas(W, H); cv.getContext('2d').putImageData(new ImageData(rgba, W, H), 0, 0); return cv;
 }
 /* 由 RAW 中繼資料重建 EXIF（相機、鏡頭、光圈、快門、ISO、時間、GPS） */
@@ -3012,23 +3090,25 @@ function rawExif(meta, name, W, H) {
 async function rawPreview(blob, name, onStage) {
   onStage && onStage('讀取 RAW…');
   const head = new Uint8Array(await blob.slice(0, 16 << 20).arrayBuffer());
+  let ref = null; try { const e = await rawEmbeddedPreview(blob, head); if (e) ref = e.canvas; } catch (e) {}
   const { meta, img } = await RawDec.decode(new Uint8Array(await blob.arrayBuffer()), true);
-  const cv = rawCanvas(img); const W = meta.width || img.width * 2, H = meta.height || img.height * 2;
+  const k = rawExposureK(img, ref); if (ref) ref.width = ref.height = 1;
+  const cv = rawCanvas(img, k); const W = meta.width || img.width * 2, H = meta.height || img.height * 2;
   const built = rawExif(meta, name, W, H);
   // 優先沿用相機寫在 RAW 裡的原始 EXIF（拍攝時間、曝光補償…完整保留）
   const L = meta.lens || {};
   let exif = Meta.fromRawTiff(head, { w: W, h: H, lens: built.lens || '', lensMake: (L.LensMake || '').trim() });
   if (exif) { const g = meta.gps_data; const sm = Meta.summary(exif) || {}; if (!sm.lat && g && g.gpsparsed && built.exif.length > 0) { const gs = Meta.summary(built.exif) || {}; if (gs.lat) exif = Meta.withGps(exif, { lat: gs.lat, lon: gs.lon, alt: gs.alt }); } }
   else exif = built.exif;
-  return { canvas: cv, W, H, exif, lens: built.lens };
+  return { canvas: cv, W, H, exif, lens: built.lens, k };
 }
 /* ================= RAW 內嵌預覽（與 Lightroom 相同的快速匯入方式） =================
    相機在 RAW 檔裡都會存一張機內 JPEG 預覽；匯入時直接取出來當縮圖／暫時預覽（幾十毫秒），
    真正的 RAW 解碼在背景慢慢做，或打開編輯時才做。支援 TIFF 系（ARW/NEF/CR2/DNG/ORF/RW2/PEF/SRW…）與 RAF。 */
-function rawEmbeddedInfo(u) {
-  const n = u.length; if (n < 16) return null;
+function rawEmbeddedInfo(u, total) {
+  const n = u.length; if (n < 16) return null; total = total || n;
   const out = { cands: [], ori: 1, rawW: 0, rawH: 0 };
-  const add = (off, len) => { if (off > 0 && len > 1000 && off + 2 < n && u[off] === 0xff && u[off + 1] === 0xd8) out.cands.push({ off, len }); };
+  const add = (off, len) => { if (off > 0 && len > 1000 && (off + 2 < n ? u[off] === 0xff && u[off + 1] === 0xd8 : off + len <= total)) out.cands.push({ off, len }); };   // 預覽可能在讀入的檔頭之後（例如 DNG），先收下、之後再檢查
   // Fujifilm RAF：檔頭 84 位元組處記錄 JPEG 位置
   if (String.fromCharCode(...u.subarray(0, 8)) === 'FUJIFILM') {
     const be = (o) => ((u[o] << 24) | (u[o + 1] << 16) | (u[o + 2] << 8) | u[o + 3]) >>> 0; add(be(84), be(88));
@@ -3056,11 +3136,26 @@ function rawEmbeddedInfo(u) {
     const w = tags[0x0100], h = tags[0x0101]; if (typeof w === 'number' && typeof h === 'number' && w * h > out.rawW * out.rawH) { out.rawW = w; out.rawH = h; }
     const next = u32(ifd + 2 + cnt * 12); if (next && next < n) todo.push(next);
   }
-  if (!out.cands.length) return null; out.cands.sort((a, b) => b.len - a.len); return out;
+  // 只保留一般 JPEG（SOF0/1/2）。RAW 本體常是「無損 JPEG」（SOF3，ARW／DNG 都有），瀏覽器無法解碼，誤選會卡住很久
+  out.cands = out.cands.map((c) => Object.assign(c, c.off + 64 < n ? sofInfo(u, c.off, c.len) : { sof: -1, w: 0, h: 0 })).filter((c) => c.sof === -1 || (c.sof >= 0xc0 && c.sof <= 0xc2 && c.w > 0));
+  if (!out.cands.length) return null; out.cands.sort((a, b) => b.w * b.h - a.w * a.h || b.len - a.len); return out;
+}
+function sofInfo(u, off, len) {
+  const end = Math.min(u.length, off + len, off + (2 << 20)); let o = off + 2;
+  while (o + 9 < end) {
+    if (u[o] !== 0xff) { o++; continue; } const m = u[o + 1]; if (m === 0xff) { o++; continue; }
+    if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { o += 2; continue; }
+    const L = (u[o + 2] << 8) | u[o + 3];
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { sof: m, h: (u[o + 5] << 8) | u[o + 6], w: (u[o + 7] << 8) | u[o + 8] };
+    if (m === 0xda) break; o += 2 + L;
+  }
+  return { sof: 0, w: 0, h: 0 };
 }
 /* 取出最大的內嵌 JPEG 並依 RAW 方向轉正；太小（< 1200px）則回傳 null，改走完整解碼 */
 async function rawEmbeddedPreview(blob, head) {
-  const info = rawEmbeddedInfo(head || new Uint8Array(await blob.slice(0, 16 << 20).arrayBuffer())); if (!info) return null;
+  const info = rawEmbeddedInfo(head || new Uint8Array(await blob.slice(0, 16 << 20).arrayBuffer()), blob.size); if (!info) return null;
+  for (const c of info.cands) if (c.sof === -1) { const u2 = new Uint8Array(await blob.slice(c.off, c.off + Math.min(c.len, 1 << 20)).arrayBuffer()); if (u2[0] === 0xff && u2[1] === 0xd8) Object.assign(c, sofInfo(u2, 0, u2.length)); else c.sof = 0; }
+  info.cands = info.cands.filter((c) => c.sof >= 0xc0 && c.sof <= 0xc2 && c.w > 0).sort((a, b) => b.w * b.h - a.w * a.h); if (!info.cands.length) return null;
   for (const c of info.cands.slice(0, 3)) {
     try {
       const jb = blob.slice(c.off, c.off + c.len, 'image/jpeg');
@@ -3072,7 +3167,7 @@ async function rawEmbeddedPreview(blob, head) {
         x.setTransform(...{ 2: [-1, 0, 0, 1, w, 0], 3: [-1, 0, 0, -1, w, hh], 4: [1, 0, 0, -1, 0, hh], 5: [0, 1, 1, 0, 0, 0], 6: [0, 1, -1, 0, hh, 0], 7: [0, -1, -1, 0, hh, w], 8: [0, -1, 1, 0, 0, w] }[ori]); x.drawImage(bm, 0, 0); bm.close();
       }
       // 暫定全尺寸：以 RAW 感光元件長邊 × 預覽比例估算（背景解碼後會更新為精確值）
-      const L = Math.max(info.rawW, info.rawH, cv.width, cv.height), ar = cv.width / cv.height;
+      const L = Math.max(cv.width, cv.height), ar = cv.width / cv.height;
       const W = ar >= 1 ? L : Math.round(L * ar), H = ar >= 1 ? Math.round(L / ar) : L;
       return { canvas: cv, W, H, ori };
     } catch (e) { console.warn('embedded preview', e); }
@@ -3080,9 +3175,10 @@ async function rawEmbeddedPreview(blob, head) {
   return null;
 }
 /* 全解析度去馬賽克（AHD），直接回傳畫布，不經過 JPEG 壓縮 */
-async function rawFull(blob) {
+async function rawFull(blob, k) {
   const { img } = await RawDec.decode(new Uint8Array(await blob.arrayBuffer()), false);
-  return rawCanvas(img);
+  if (!k) { let ref = null; try { const e = await rawEmbeddedPreview(blob); if (e) ref = e.canvas; } catch (e) {} k = rawExposureK(img, ref); }
+  await yieldNow(); return rawCanvas(img, k);
 }
 
 /* ================= 鏡頭描述檔（Lensfun 開放資料庫） =================
@@ -3693,12 +3789,17 @@ class Session {
     Engine.runPasses({ lut3: this.lutFor(e), e, G, W, H, origin: [0, 0], sigma, src: this.srcObj(), brush: this.brushPreview(e), target, guide: gi.tex, sky: this.skyTex, skyLmin: this.skyLmin, atm, pool: 'h' });
     const px = Engine.readTex(target, 0, 0, W, H); const c = mkCanvas(W, H); c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), W, H), 0, 0); return c;
   }
-  async ensureFull() {
+  ensureFull() {   // 同時多次呼叫（背景預先載入＋放大）只解碼一次
+    if (this.full) return Promise.resolve(this.full);
+    if (!this._fullP) this._fullP = this._ensureFull().finally(() => { this._fullP = null; });
+    return this._fullP;
+  }
+  async _ensureFull() {
     if (this.full) return this.full;
     const blob = await DB.get('files', this.rec.id);
     if (!blob && this.rec.rawLazy) {
       const raw = await DB.get('raw', this.rec.id); if (!raw) throw new Error('找不到 RAW 原始檔');
-      this.full = await rawFull(raw);
+      this.full = await rawFull(raw, this.rec.rawK);
       // 第一次全解析度解碼後，在背景存一份 4:4:4 品質 100 的副本，之後放大／匯出直接讀取（不用再解 RAW）
       if (window.OffscreenCanvas) { const c = this.full, id = this.rec.id; setTimeout(async () => { try { const oc = new OffscreenCanvas(c.width, c.height); oc.getContext('2d').drawImage(c, 0, 0); const b = await oc.convertToBlob({ type: 'image/jpeg', quality: 1 }); oc.width = oc.height = 1; await DB.put('files', b, id); } catch (e) { console.warn('raw cache', e); } }, 1500); }
       if (this.full.width !== this.SW || this.full.height !== this.SH) { this.SW = this.full.width; this.SH = this.full.height; }
@@ -4032,6 +4133,12 @@ const Editor = {
     this.setTool(this.tool === 'versions' || this.tool === 'crop' ? 'edit' : this.tool);
     this.ensureAi();
     this.requestRender();
+    if (!rec.prevEmb) this.prefetchFull(tok);
+  },
+  /* 開啟後在背景先準備好原始解析度（RAW 只解一次並快取），之後放大縮小直接顯示，不用再等解析 */
+  prefetchFull(tok) {
+    clearTimeout(this.pfT);
+    this.pfT = setTimeout(() => { const s = this.ses; if (tok !== this.openTok || !this.active || !s || s.full || (this.rec.w * this.rec.h) > 6.2e7) return; s.ensureFull().catch((e) => console.warn('prefetch', e)); }, 1800);
   },
   async upgradeRaw(rec, tok) {
     this.rawPill('RAW 解碼中・完成後自動更新（可先調整）');
@@ -4044,7 +4151,7 @@ const Editor = {
       if (tok !== this.openTok || !this.active || !this.ses) { ns.dispose(); return; }
       const old = this.ses; this.ses = ns; old.dispose(); this.detail = null; this.detailKey = ''; this.last = null;
       $('#edMeta').textContent = `${this.rec.w} × ${this.rec.h}・${(this.rec.w * this.rec.h / 1e6).toFixed(1)} MP`;
-      this.ensureAi(); this.requestRender(); this.rawPill(null); toast('已切換為 RAW 解碼畫面', 1600);
+      this.ensureAi(); this.requestRender(); this.rawPill(null); toast('已切換為 RAW 解碼畫面', 1600); this.prefetchFull(tok);
     } catch (e) { console.warn('develop', e); if (tok === this.openTok) { this.rawPill(null); toast('RAW 預覽建立失敗，暫用內嵌預覽：' + e.message, 4000); } }
   },
   rawPill(tx) {
@@ -6076,6 +6183,8 @@ const Library = {
     document.addEventListener('drop', (e) => { e.preventDefault(); const fs = [...(e.dataTransfer.files || [])].filter((f) => /image|heic|dng/i.test(f.type + f.name)); if (fs.length) this.importFiles(fs.map((f) => ({ blob: f, name: f.name, mime: f.type }))); });
     await this.refresh();
     this.fixOrientation();
+    // v1.12：RAW 改用 16-bit 新處理方式，舊版建立的 RAW 預覽與全解析度暫存重新產生（原始 RAW 與修圖設定不變）
+    try { for (const r of this.recs) if (r.hasRaw && r.rawV !== 2 && !r.prevEmb) { r.prevEmb = true; await DB.put('photos', r); await DB.del('files', r.id).catch(() => {}); } } catch (e) { console.warn('raw migrate', e); }
     document.addEventListener('visibilitychange', () => { if (!document.hidden && this.dirty) { this.dirty = false; this.render(); } });
     setTimeout(() => { this.resumePending(); this.developAll(); }, 1500);
   },
@@ -6281,7 +6390,7 @@ const Library = {
       const W = d.W, H = d.H, bm = d.canvas;
       const mk = async (long, q) => { const sc = Math.min(1, long / Math.max(W, H)); const c = mkCanvas(W * sc, H * sc); const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(bm, 0, 0, c.width, c.height); const b = await canvasBlob(c, 'image/jpeg', q); c.width = c.height = 1; return b; };
       await DB.put('prev', await mk(CFG.prevLong, .95), r.id); await DB.put('thumbs', await mk(480, .85), r.id); bm.width = bm.height = 1;
-      r.w = W; r.h = H; r.exifBin = d.exif; const ex = Meta.summary(d.exif); if (ex) r.exif = Object.assign({}, r.exif, ex);
+      r.w = W; r.h = H; r.exifBin = d.exif; r.rawK = d.k; r.rawV = 2; const ex = Meta.summary(d.exif); if (ex) r.exif = Object.assign({}, r.exif, ex);
       if (!r.edited && !r.lensKey) { try { const lp = await lensProfileFor(r); if (lp.lens) { r.lensKey = lp.key; r.lensName = lp.name; if (CFG.lensAutoRaw !== false) { r.edit = r.edit || {}; r.edit.optics = { prof: { on: true, key: lp.key, name: lp.name, d: 100, v: 100, tca: true, p: lp.p, camCrop: lp.camCrop } }; } } } catch (e) {} }
       delete r.prevEmb; await DB.put('photos', r);
       const lr = this.recs.find((x) => x.id === r.id); if (lr) Object.assign(lr, r); delete (lr || {}).prevEmb;
@@ -6305,7 +6414,7 @@ const Library = {
   updQ(it) { if (it.el && it.el.isConnected) it.el.querySelector('.qst').textContent = it.st; },
   async importOne({ blob, name, mime, conv, mid }, stage) {
     mime = mime || blob.type || '';
-    let wasRaw = false, rawBlob = null, preDecoded = null, exifBin = null, fullWH = null, emb = false;
+    let wasRaw = false, rawBlob = null, preDecoded = null, exifBin = null, fullWH = null, emb = false, rawK = 0;
     if (isRawName(name) || /x-(sony|canon|nikon|fuji|panasonic|olympus|pentax|adobe-dng)|image\/(dng|raw)/i.test(mime)) {
       const ext = (/\.([a-z0-9]+)$/i.exec(name) || [, 'raw'])[1].toLowerCase();
       rawBlob = blob; mime = 'image/jpeg'; conv = ext; wasRaw = true;
@@ -6317,7 +6426,7 @@ const Library = {
         if (e) { preDecoded = e.canvas; fullWH = [e.W, e.H]; exifBin = Meta.fromRawTiff(head, { w: e.W, h: e.H, lens: '', lensMake: '' }) || new Uint8Array(0); emb = true; }
       } catch (er) { console.warn('embedded', er); }
       if (!emb) {
-        try { const r = await rawPreview(blob, name, (t) => stage && stage(t)); preDecoded = r.canvas; exifBin = r.exif; fullWH = [r.W, r.H]; }
+        try { const r = await rawPreview(blob, name, (t) => stage && stage(t)); preDecoded = r.canvas; exifBin = r.exif; fullWH = [r.W, r.H]; rawK = r.k; }
         catch (e) { throw new Error('RAW 解碼失敗：' + e.message); }
       }
     }
@@ -6341,7 +6450,7 @@ const Library = {
         if (on) { rec.edit = rec.edit || {}; rec.edit.optics = { prof: { on: true, key: lp.key, name: lp.name, d: 100, v: 100, tca: true, p: lp.p, camCrop: lp.camCrop } }; } }
     } catch (e) { console.warn('lens detect', e); }
     rec.raw = wasRaw; if (mid != null) rec.mid = mid; if (emb) rec.prevEmb = true;
-    if (wasRaw) { rec.rawLazy = true; rec.exifBin = exifBin; await DB.put('raw', rawBlob, id); rec.hasRaw = true; }
+    if (wasRaw) { rec.rawLazy = true; rec.exifBin = exifBin; if (rawK) { rec.rawK = rawK; rec.rawV = 2; } await DB.put('raw', rawBlob, id); rec.hasRaw = true; }
     else await DB.put('files', blob, id);
     await DB.put('prev', prev, id); await DB.put('thumbs', thumb, id);
     await DB.put('photos', rec);
@@ -6360,15 +6469,19 @@ const Gallery = {
   sel: new Set(), items: [], bucket: '', offset: 0, done: false,
   async open() {
     if (!AIP.mediaPerm()) { NAT.call('requestPerm', 'media'); toast('請允許讀取相片後再按一次「匯入」'); return; }
-    this.sel = new Set(); this.items = []; this.offset = 0; this.done = false;
+    this.sel = new Set(); this.items = []; this.offset = 0; this.done = false; this.all = null;
     const buckets = NAT.json('mediaBuckets') || [];
     const sel = h('select', { style: { padding: '5px 10px', fontSize: '14px', maxWidth: '55%' } }, h('option', { value: '' }, '所有相片'), buckets.map((b) => h('option', { value: b.name, selected: b.name === this.bucket }, `${b.name}（${b.count}）`)));
-    sel.onchange = () => { this.bucket = sel.value; this.items = []; this.offset = 0; this.done = false; grid.innerHTML = ''; this.more(grid); };
+    const reset = () => { this.items = []; this.offset = 0; this.done = false; this.all = null; grid.innerHTML = ''; this.more(grid); };
+    sel.onchange = () => { this.bucket = sel.value; reset(); };
+    const SORTS = [['date-desc', '拍攝時間：新→舊'], ['date-asc', '拍攝時間：舊→新'], ['name-asc', '檔名：A→Z'], ['name-desc', '檔名：Z→A'], ['added-desc', '加入相簿：新→舊']];
+    const srt = h('select', { style: { padding: '5px 10px', fontSize: '14px', maxWidth: '48%' } }, SORTS.map(([k, n]) => h('option', { value: k, selected: k === (CFG.gsort || 'date-desc') }, n)));
+    srt.onchange = () => { CFG.gsort = srt.value; saveCfg(); reset(); };
     const grid = h('div', { class: 'ggrid' }); this.countEl = h('b', null, '已選 0');
     const goBtn = h('button', { class: 'btn pri', onclick: () => { if (!this.sel.size) { toast('請先點選相片'); return; } const ids = [...this.sel]; UI.close(); AIP.pickIds(JSON.stringify(ids)); toast(`開始匯入 ${ids.length} 張相片`); } }, '匯入');
     this.goBtn = goBtn;
     const box = h('div', null,
-      h('div', { class: 'lbl2' }, sel, h('span', { style: { display: 'flex', gap: '6px' } }, h('button', { class: 'btn sm', onclick: () => this.selectAll(grid) }, '全選'),
+      h('div', { class: 'lbl2', style: { gap: '6px' } }, sel, srt), h('div', { class: 'lbl2' }, h('span', { class: 'sub' }, '點選相片可多選'), h('span', { style: { display: 'flex', gap: '6px' } }, h('button', { class: 'btn sm', onclick: () => this.selectAll(grid) }, '全選'),
         h('button', { class: 'btn sm', onclick: () => { this.sel.clear(); $$('.gcell', grid).forEach((c) => c.classList.remove('on')); this.upd(); } }, '清除'))),
       h('div', { class: 'gscroll' }, grid), h('div', { class: 'gbar' }, this.countEl, h('span', { class: 'grow' }), h('button', { class: 'btn sm', onclick: () => { UI.close(); NAT.call('systemPick'); } }, '從檔案選取…'), goBtn));
     UI.sheet('選擇相片（可多選）', box); $('#sheet').classList.add('tall');
@@ -6379,7 +6492,17 @@ const Gallery = {
   },
   more(grid) {
     if (this.done || this.loading) return; this.loading = true;
-    const arr = NAT.json('mediaList', this.bucket, this.offset, 120) || [];
+    const mode = CFG.gsort || 'date-desc'; let arr;
+    if (mode === 'added-desc') arr = NAT.json('mediaList', this.bucket, this.offset, 120) || [];
+    else {
+      if (!this.all) { // 依檔名或拍攝時間排序：先取得整個資料夾的清單（只有名稱與時間，很快），再分批顯示
+        const all = []; for (let off = 0, g = 0; g < 200; g++) { const a = NAT.json('mediaList', this.bucket, off, 2000) || []; if (!Array.isArray(a) || !a.length) break; all.push(...a); off += a.length; if (a.length < 2000) break; }
+        const col = new Intl.Collator('zh-Hant', { numeric: true, sensitivity: 'base' }), dir = /desc$/.test(mode) ? -1 : 1;
+        all.sort(/^name/.test(mode) ? (x, y) => dir * col.compare(x.name || '', y.name || '') : (x, y) => dir * ((x.date || 0) - (y.date || 0)) || col.compare(x.name || '', y.name || ''));
+        this.all = all;
+      }
+      arr = this.all.slice(this.offset, this.offset + 120);
+    }
     if (!Array.isArray(arr) || arr.length < 120) this.done = true;
     this.offset += arr.length;
     for (const it of arr) {
@@ -6473,7 +6596,7 @@ const Settings = {
 };
 
 /* ================= App ================= */
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.12.0';
 const App = {
   view: 'lib', clip: null, userPresets: [],
   async init() {

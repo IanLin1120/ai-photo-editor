@@ -13,7 +13,7 @@ Android 修圖 App（WebView + 原生外殼）。
 |---|---|
 | `index.html`、`version.json` | 線上更新用（App 透過 GitHub Pages 讀取） |
 | `apk/`、`apks.json` | 所有版本的 APK 與清單 |
-| `src/` | 原始碼：`base/v1.10.1.html`（舊版本體）＋ `web/`（新增模組）＋ `build.py`（組合）＋ `android/`（原生外殼，沿用 v1.10.1 的 classes.dex） |
+| `src/` | 原始碼：`base/parts/`（以 v1.10.1 為基礎的本體，拆成多個檔案方便修改）＋ `web/`（新增模組）＋ `build.py`（組合）＋ `android/`（原生外殼，沿用 v1.10.1 的 classes.dex） |
 
 ## 設定
 

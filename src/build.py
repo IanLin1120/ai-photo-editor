@@ -5,7 +5,7 @@ import os, json, shutil
 H = os.path.dirname(os.path.abspath(__file__)); W = H + '/web/'
 VER = os.environ.get('VER', '1.11.0'); CODE = int(os.environ.get('CODE', '19')); MINAPK = os.environ.get('MINAPK', '1.11.0'); NOTES = os.environ.get('NOTES', '')
 rd = lambda f: open(W + f, encoding='utf8').read()
-s = open(H + '/base/v1.10.1.html', encoding='utf8').read()
+P = H + '/base/parts/'; s = ''.join(open(P + f, encoding='utf8').read() for f in json.load(open(P + 'order.json')))
 def rep(old, new, cnt=1):
     global s
     n = s.count(old); assert n == cnt, (old[:80], n); s = s.replace(old, new)
