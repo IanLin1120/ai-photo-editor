@@ -1013,28 +1013,40 @@ const Editor = {
     if (!P || !P.on) { if (el) el.remove(); return; }
     if (!el) { el = h('div', { id: 'pplPill', class: 'glass' }); $('#stage').append(el); }
     el.innerHTML = ''; el.append(h('button', { class: 'ib', onclick: () => { P.on = false; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '✕'),
-      h('div', { class: 'grow' }, h('b', null, `移除選取的人物（${P.sel.size}）`), h('div', { class: 'sub' }, '點選人物以選取／取消選取')),
+      h('div', { class: 'grow' }, h('b', null, `消除選取的人物（${P.sel.size}）`), h('div', { class: 'sub' }, '點人物切換：白色＝消除、虛線＝保留')),
       h('button', { class: 'ib ok', disabled: !P.sel.size, onclick: () => this.applyPeople() }, '✓'));
+  },
+  /* v1.17：在手機上偵測（數秒），選好後只把「要消除的人」送到雲端 AI 消除（LaMa） */
+  async detectPeople() {
+    if (this.pplBusy || !this.ses) return; const id = this.rec.id;
+    const say = (t) => { this.pplBusy = t; const b = $('#pplBtn'); if (b) b.textContent = t; };
+    say('準備中…'); this.renderPanel();
+    try {
+      const L = await People.detect(this.ses.prev, (t, f) => say(t + (f < 1 ? `（${Math.round(f * 100)}%）` : '')));
+      await DB.put('ai', { list: L, t: Date.now(), on: 'device' }, 'people:' + id);
+      if (!this.rec || this.rec.id !== id) return;
+      this.ppl = null; await this.loadPeople();
+      if (L.length) { this.ppl.on = true; this.pplPill(); this.drawOverlay(); toast(`👥 偵測到 ${L.length} 位人物（${(People.lastMs / 1000).toFixed(1)} 秒）：白色＝要消除，點人物可切換`, 4000); }
+      else toast('畫面中沒有偵測到人物', 3000);
+    } catch (e) { console.error(e); toast('人物偵測失敗：' + e.message, 5000); }
+    finally { this.pplBusy = null; if (this.tool === 'aifix') this.renderPanel(); }
   },
   async applyPeople() {
     const P = this.ppl, id = this.rec.id, sel = [...P.sel].map((i) => P.list[i]); if (!sel.length) return;
-    this.busy('消除人物中…', true);
-    try {
-      const clean = await DB.get('ai', 'pclean:' + id); if (!clean) throw new Error('找不到雲端修補結果，請重新偵測');
-      const full = await this.ses.ensureFull(), W = full.width, H = full.height, L = Math.max(W, H);
-      const cb = await createImageBitmap(clean);
-      // 遮罩：人物輪廓外擴（連同邊緣一起換成修補結果）再羽化，交界自然
-      const m = mkCanvas(W, H), mc = m.getContext('2d'); mc.fillStyle = mc.strokeStyle = '#fff'; mc.lineJoin = 'round';
-      for (const p of sel) { const bh = (p.box[3] - p.box[1]) * H; mc.lineWidth = Math.max(L * 0.004, bh * 0.05); for (const poly of p.polys) { mc.beginPath(); poly.forEach((q, k) => (k ? mc.lineTo(q[0] * W, q[1] * H) : mc.moveTo(q[0] * W, q[1] * H))); mc.closePath(); mc.fill(); mc.stroke(); } }
-      const mb = mkCanvas(W, H), mbc = mb.getContext('2d'); mbc.filter = `blur(${Math.max(2, Math.round(L / 900))}px)`; mbc.drawImage(m, 0, 0); m.width = m.height = 1;
-      const t = mkCanvas(W, H), tc = t.getContext('2d'); tc.drawImage(cb, 0, 0, W, H); cb.close(); tc.globalCompositeOperation = 'destination-in'; tc.drawImage(mb, 0, 0); mb.width = mb.height = 1;
-      const o = mkCanvas(W, H), oc = o.getContext('2d'); oc.drawImage(full, 0, 0); oc.drawImage(t, 0, 0); t.width = t.height = 1;
-      const blob = await canvasBlob(o, 'image/jpeg', 0.97); o.width = o.height = 1;
-      P.on = false; this.pplPill(); await this.persist();
-      await DB.del('ai', 'people:' + id).catch(() => {}); await DB.del('ai', 'pclean:' + id).catch(() => {}); this.ppl = null;
-      await Cloud.applyFix({ id, ops: ['erase'] }, blob, null, { done: ['erase'], erase: `已消除 ${sel.length} 位人物` });
-      this.busy(null);
-    } catch (e) { this.busy(null); console.error(e); toast('消除失敗：' + e.message, 5000); }
+    const SW = this.ses.SW, SH = this.ses.SH, s = Math.min(1, 2048 / Math.max(SW, SH)), w = Math.round(SW * s), hh = Math.round(SH * s);
+    const c = mkCanvas(w, hh), x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, w, hh); x.fillStyle = x.strokeStyle = '#fff'; x.lineJoin = x.lineCap = 'round';
+    for (const p of sel) {
+      const bh = (p.box[3] - p.box[1]) * hh; x.lineWidth = Math.max(w * 0.004, bh * 0.07);   // 輪廓外擴：頭髮、衣角、邊緣殘影一起消除
+      for (const poly of p.polys) { x.beginPath(); poly.forEach((q, k) => (k ? x.lineTo(q[0] * w, q[1] * hh) : x.moveTo(q[0] * w, q[1] * hh))); x.closePath(); x.fill(); x.stroke(); }
+      // 腳下的影子：底部往下多延伸一點
+      const bx0 = p.box[0] * w, bx1 = p.box[2] * w, by = p.box[3] * hh; x.beginPath(); x.ellipse((bx0 + bx1) / 2, by, (bx1 - bx0) * 0.55, bh * 0.05, 0, 0, 7); x.fill();
+    }
+    const mask = await canvasBlob(c, 'image/png'); c.width = c.height = 1;
+    await this.persist();
+    if (await Cloud.enqueueFix([this.rec], ['erase'], { erase: { people: sel.length } }, { [id]: mask })) {
+      P.on = false; this.pplPill(); await DB.del('ai', 'people:' + id).catch(() => {}); this.ppl = null; this.drawOverlay(); this.renderPanel();
+      toast(`☁ 已送出消除 ${sel.length} 位人物，完成後自動套用（可在「AI 修復」還原原圖）`, 4500);
+    }
   },
   drawErase(x, ov, dpr) {
     this.drawPeople(x, dpr);
@@ -1091,15 +1103,16 @@ const Editor = {
       h('div', { class: 'note' }, '處理順序：消除拖影 → 消除反光 → AI 消除 → 救援廢片 → 畫質增強 → 人像補光 → 人像美顏。完成後會成為這張相片的新原圖（所有調整、遮色片都會保留），隨時可「還原原圖」。若有開 AI 降噪，雲端會一併重新降噪。一張 2400 萬像素約 5–20 分鐘，可切到背景，進度會顯示在這裡與通知列。'));
   },
   peopleCard(job) {
-    const box = h('div', { class: 'aicard' }, h('h4', null, '👥 移除多餘人物'), h('div', { class: 'sub' }, '像 Lightroom：AI 找出畫面中的每一個人並沿著輪廓框起來，點選要消除的人（白色＝要消除、虛線＝保留），按 ✓ 就會用周圍背景自然補上。偵測與修補在雲端完成（約 3–8 分鐘），之後選人、消除都在手機上立即完成。'));
+    const box = h('div', { class: 'aicard' }, h('h4', null, '👥 移除多餘人物'), h('div', { class: 'sub' }, '像 Lightroom：AI 在手機上找出畫面中的每一個人並沿著輪廓框起來（幾秒完成，第一次使用會先下載約 31 MB 的模型），點選要消除的人（白色＝消除、虛線＝保留），按 ✓ 後送到雲端用周圍背景自然補上。'));
     const P = this.ppl && this.ppl.rec === this.rec.id ? this.ppl : null;
     if (!P) { this.loadPeople().then(() => this.tool === 'aifix' && this.renderPanel()); return box; }
-    const pj = job && job.kind === 'people';
-    if (P.list.length) box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', onclick: () => { P.on = true; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, P.on ? `選取中（${P.sel.size}/${P.list.length}）` : `選擇要消除的人物（偵測到 ${P.list.length} 位）`),
+    if (this.pplBusy) { box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', id: 'pplBtn', disabled: true }, this.pplBusy))); return box; }
+    if (P.list.length) box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', disabled: !!job, onclick: () => { P.on = true; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, P.on ? `選取中（${P.sel.size}/${P.list.length}）` : `選擇要消除的人物（${P.list.length} 位）`),
       P.on ? h('button', { class: 'btn sm', onclick: () => { P.list.forEach((_, i) => P.sel.add(i)); this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '全選') : null,
       P.on ? h('button', { class: 'btn sm', onclick: () => { P.sel.clear(); this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '全不選') : null,
-      h('button', { class: 'btn sm', disabled: !!job, onclick: () => Cloud.enqueuePeople(this.rec) }, '重新偵測')));
-    else box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', disabled: !!job, onclick: async () => { if (await Cloud.enqueuePeople(this.rec)) this.renderPanel(); } }, pj ? '☁ 偵測中…' : P.none ? '👥 AI 偵測多餘人物（雲端）' : '沒有偵測到人物・重新偵測')));
+      h('button', { class: 'btn sm', onclick: () => this.detectPeople() }, '重新偵測')));
+    else box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', id: 'pplBtn', disabled: !!job, onclick: () => this.detectPeople() }, P.none ? '👥 偵測畫面中的人物' : '沒有偵測到人物・重新偵測')));
+    if (job) box.append(h('div', { class: 'sub' }, '這張相片正在雲端處理中，完成後再選擇。'));
     return box;
   },
   async sendFix(ops) {

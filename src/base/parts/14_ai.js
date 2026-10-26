@@ -441,19 +441,33 @@ const Exporter = {
   },
   /* 匯出多張 */
   /* 匯出一律排隊執行；opt.silent＝背景匯出（雲端完成後自動匯出用）：不跳出全螢幕進度框，只用通知列與小提示 */
+  cancel() { if (!this.ctl) return; this.ctl.aborted = true; $('#epTx').textContent = '取消中…'; this.pill('取消中…'); },
+  /* 背景執行時的小進度列：點一下回到進度視窗，✕ 取消 */
+  pill(tx) {
+    let el = $('#expPill'); if (!tx) { if (el) el.remove(); return; }
+    if (!el) { el = h('div', { id: 'expPill', class: 'glass' }, h('span', { class: 'spin' }), h('span', { class: 'grow', id: 'expPillTx' }), h('div', { class: 'prog' }, h('i', { id: 'expPillBar' })), h('button', { class: 'ib', onclick: (e) => { e.stopPropagation(); this.cancel(); } }, '✕'));
+      el.onclick = () => { if (!this.ctl) return; this.bgMode = false; this.pill(null); $('#expProg').classList.add('on'); }; document.body.append(el); }
+    $('#expPillTx').textContent = tx; const b = $('#epBar'); if (b) $('#expPillBar').style.width = b.style.width;
+  },
   run(recs, getEdit, opt = {}) { const p = (this.chain || Promise.resolve()).then(() => this._run(recs, getEdit, opt)); this.chain = p.catch(() => {}); return p; },
   async _run(recs, getEdit, opt) {
-    const box = $('#expProg'); if (!opt.silent) box.classList.add('on'); const ctl = { aborted: false };
-    if (opt.silent) { toast(`☁ 雲端結果已回傳，背景匯出 ${recs.length} 張到相簿…`, 3000); BG.set('export', `背景匯出 0 / ${recs.length}`, 0); }
-    $('#epCancel').onclick = () => { ctl.aborted = true; $('#epTx').textContent = '取消中…'; };
+    const box = $('#expProg'); const ctl = this.ctl = { aborted: false }; this.bgMode = false;
+    if (!opt.silent) { box.classList.add('on'); this.pill(null); }
+    if (opt.silent) toast(`☁ 雲端結果已回傳，背景匯出 ${recs.length} 張到相簿…`, 3000);
+    // v1.17：一般匯出也啟動前景服務（通知列顯示進度）→ 切到其他 App 仍會繼續匯出；把 App 從最近使用中滑掉則取消
+    BG.set('export', `匯出 0 / ${recs.length}`, 0);
+    $('#epCancel').onclick = () => this.cancel();
+    let bgb = $('#epBg'); if (!bgb) { bgb = h('button', { class: 'btn sm', id: 'epBg' }, '在背景執行'); $('#epCancel').before(bgb); }
+    bgb.style.display = opt.silent ? 'none' : ''; bgb.onclick = () => { this.bgMode = true; box.classList.remove('on'); this.pill($('#epTitle').textContent); };
     const done = []; let fail = 0;
     try {
       for (let i = 0; i < recs.length; i++) {
         if (ctl.aborted) break;
         const rec = recs[i]; const fmt = this.fmtFor(rec); const name = this.nameFor(rec, fmt);
         $('#epTitle').textContent = `匯出中 ${i + 1} / ${recs.length}`; $('#epTx').textContent = name; $('#epSub').textContent = '';
-        if (opt.silent) BG.set('export', `背景匯出 ${i + 1} / ${recs.length}：${name}`, Math.round(i / recs.length * 100));
-        const setP = (f) => { $('#epBar').style.width = Math.round(((i + clamp(f, 0, 1)) / recs.length) * 100) + '%'; };
+        BG.set('export', `${opt.silent ? '背景' : ''}匯出 ${i + 1} / ${recs.length}：${name}`, Math.round(i / recs.length * 100));
+        if (this.bgMode) this.pill(`匯出中 ${i + 1} / ${recs.length}`);
+        const setP = (f) => { const w = Math.round(((i + clamp(f, 0, 1)) / recs.length) * 100) + '%'; $('#epBar').style.width = w; const pb = $('#expPillBar'); if (pb) pb.style.width = w; };
         setP(0);
         let ses = (window.Editor && Editor.ses && Editor.ses.rec.id === rec.id) ? Editor.ses : null; const own = !ses;
         try {
@@ -476,9 +490,12 @@ const Exporter = {
           console.error(err); fail++; toast(`「${name}」匯出失敗：${err.message}`, 4000);
         } finally { if (own && ses) ses.dispose(); }
       }
-    } finally { if (!opt.silent) box.classList.remove('on'); }
+    } finally { if (!opt.silent) box.classList.remove('on'); this.pill(null); this.ctl = null; BG.end('export'); }
+    if (ctl.aborted) { this.srList = null; toast(done.length ? `已取消匯出（已完成 ${done.length} 張）` : '已取消匯出', 3000); return done; }
     if (this.srList && this.srList.length) { const l = this.srList; this.srList = null; try { await Cloud.enqueueSR(l, opt.srScale || 2); } catch (e) { toast('無法送出 AI 畫質增強：' + e.message, 5000); } return done; }
-    if (opt.silent) { BG.end('export'); if (done.length) { toast(`✓ 已背景匯出 ${done.length} 張到「圖片／AI修圖軟體」`, 3500); NAT.call('notifyDone', '自動匯出完成', `${done.length} 張已存到 圖片／AI修圖軟體`); } return done; }
+    if (document.hidden && done.length && !opt.silent && !this.bgMode) NAT.call('notifyDone', '匯出完成', `${done.length} 張已存到 圖片／AI修圖軟體`);
+    if (this.bgMode && done.length && !opt.silent) { NAT.call('notifyDone', '匯出完成', `${done.length} 張已存到 圖片／AI修圖軟體`); toast(`✓ 已匯出 ${done.length} 張到「圖片／AI修圖軟體」`, 3500); return done; }
+    if (opt.silent) { if (done.length) { toast(`✓ 已背景匯出 ${done.length} 張到「圖片／AI修圖軟體」`, 3500); NAT.call('notifyDone', '自動匯出完成', `${done.length} 張已存到 圖片／AI修圖軟體`); } return done; }
     if (done.length) {
       const d = done[0];
       const where = isApp ? '圖片 / AI修圖軟體' : d.res.where;

@@ -13,8 +13,13 @@ const Upd = {
   boot() {
     try { localStorage.removeItem('aip.otaFail'); } catch (e) {}
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.onResume(); });
-    if (CFG.autoUpd === false) return; const last = lsGet('aip.updAt', 0); if (Date.now() - last < 6 * 3600e3) return;
-    setTimeout(() => { lsSet('aip.updAt', Date.now()); this.check(false); }, 9000);
+    // v1.17：每次開啟 App 都自動檢查（App 一直開著時，回到 App 且距離上次檢查超過 30 分鐘也會再檢查）；只有真的有新版本才跳出提示
+    if (CFG.autoUpd === false) return;
+    setTimeout(() => this.auto(), 4000);
+  },
+  auto() {
+    if (CFG.autoUpd === false || this.isOpen() || (window.Exporter && Exporter.ctl)) return;
+    lsSet('aip.updAt', Date.now()); this.check(false);
   },
   async manifest() { const r = await fetch(GH.pages + 'version.json?t=' + Date.now(), { cache: 'no-store' }); if (!r.ok) throw new Error(r.status === 404 ? 'GitHub 上還沒有發布版本（請確認已開啟 GitHub Pages）' : 'HTTP ' + r.status); return r.json(); },
   idb() { return new Promise((res, rej) => { const q = indexedDB.open('aip-ota', 1); q.onupgradeneeded = () => q.result.createObjectStore('f'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
@@ -23,10 +28,15 @@ const Upd = {
     const say = (t) => { const st = $('#updSt'); if (st) st.textContent = t; };
     try {
       say('檢查中…'); const v = await this.manifest(); lsSet('aip.updLast', { v, t: Date.now() }); const apk = this.apk();
-      if (isApp && v.minApk && apk && this.gt(v.minApk, apk)) {
-        say(`有新版 APK v${v.apkName || v.app}（需要重新安裝）`);
-        this.dialog(`有新版 APK v${this.esc(v.apkName || v.app)}`, `${v.notes ? this.esc(v.notes) + '<br><br>' : ''}這次是大改版（手機端程式有更新），需要安裝新的 APK；會直接覆蓋舊版，圖庫與修圖紀錄都會保留。`, [[this.native() ? '⬇ 下載並安裝' : '⬇ 下載最新版 APK', () => this.installLatest()], ['稍後', null]]); return;
-      }
+      const apkNew = isApp && apk && v.apkName && this.gt(v.apkName, apk), must = isApp && v.minApk && apk && this.gt(v.minApk, apk);
+      const apkDlg = (must) => {
+        say(`有新版 APK v${v.apkName || v.app}${must ? '（需要重新安裝）' : ''}`);
+        this.dialog(`🎉 有新版 APK v${this.esc(v.apkName || v.app)}`, `${v.notes ? this.esc(v.notes) + '<br><br>' : ''}${must ? '這次是大改版（手機端程式有更新），需要安裝新的 APK。' : '手機端程式有更新，建議安裝新的 APK。'}${this.native() ? '按「下載並安裝」會直接在 App 裡下載，完成後跳出系統的「更新」確認；' : ''}會直接覆蓋舊版，圖庫與修圖紀錄都會保留。`,
+          [[this.native() ? '⬇ 下載並安裝' : '⬇ 下載最新版 APK', () => this.installLatest()], ['稍後', () => { if (!must) lsSet('aip.apkSnooze', { v: v.apkName, t: Date.now() }); }]]);
+      };
+      if (must) { apkDlg(true); return; }
+      const snz = lsGet('aip.apkSnooze', null), snoozed = !manual && snz && snz.v === v.apkName && Date.now() - snz.t < 12 * 3600e3;
+      if (apkNew && !this.gt(v.app, APP_VERSION)) { if (!snoozed) apkDlg(false); else say(`有新版 APK v${v.apkName}`); return; }
       if (!this.gt(v.app, APP_VERSION)) { say(`已經是最新版本 v${APP_VERSION}`); if (manual) toast('已經是最新版本 v' + APP_VERSION); return; }
       if (!isApp) { say(`有新版本 v${v.app}`); if (manual) this.dialog('有新版本 v' + this.esc(v.app), '網頁版請重新整理或開啟 GitHub 上的最新網頁版。', [['🌐 開啟網頁版', () => this.open(GH.pages)], ['稍後', null]]); return; }
       say(`下載新版本 v${v.app}…`);
@@ -68,7 +78,7 @@ const Upd = {
     this.dialog(`⬇ 更新到 v${this.esc(v || '')}`, '<div id="apkTx" class="sub">準備下載…</div><div class="prog" style="margin-top:8px"><i id="apkBar" style="width:0%"></i></div>', [['在背景繼續', null]]);
     AIP2.installApk(url);
   },
-  onResume() { if (this.pend && this.native() && AIP2.canInstall()) { const p = this.pend; this.pend = null; setTimeout(() => this.install(p.url, p.v), 400); } },
+  onResume() { if (CFG.autoUpd !== false && Date.now() - lsGet('aip.updAt', 0) > 30 * 60e3) setTimeout(() => this.auto(), 1500); if (this.pend && this.native() && AIP2.canInstall()) { const p = this.pend; this.pend = null; setTimeout(() => this.install(p.url, p.v), 400); } },
   onApk(d) {
     try { d = typeof d === 'string' ? JSON.parse(d) : d; } catch (e) { return; }
     const tx = $('#apkTx'), bar = $('#apkBar'), set = (t, p) => { if (tx) tx.textContent = t; if (bar && p != null) bar.style.width = Math.round(p * 100) + '%'; };

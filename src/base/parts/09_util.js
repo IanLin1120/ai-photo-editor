@@ -86,6 +86,7 @@ window.onNativeEvent = function (type, data) {
   else if (type === 'perm') Settings.render();
   else if (type === 'http') Cloud.onHttp(typeof data === 'string' ? JSON.parse(data) : data);
   else if (type === 'apk') { try { Upd.onApk(data); } catch (e) {} }
+  else if (type === 'closed') { try { Exporter.cancel(); } catch (e) {} }   // v1.17：App 從最近使用中被滑掉 → 取消匯出
   return false;
 };
 

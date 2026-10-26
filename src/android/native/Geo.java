@@ -59,6 +59,14 @@ public class Geo {
     }
 
     /* 由 MainActivity.onRequestPermissionsResult 呼叫；回傳 true 表示已處理 */
+    /* v1.17：App 從「最近使用」被滑掉（Activity 結束、不是旋轉螢幕）→ 通知網頁取消進行中的匯出 */
+    public static void onDestroy(MainActivity a) {
+        try {
+            if (a.isChangingConfigurations()) return;
+            WebView w = a.web; if (w != null) w.evaluateJavascript("window.onNativeEvent&&onNativeEvent('closed','')", null);
+        } catch (Throwable t) { }
+    }
+
     public static boolean onPerm(MainActivity a, int code) {
         if (code != REQ_LOC) return false;
         boolean ok = has(a);
