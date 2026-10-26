@@ -80,11 +80,12 @@ const BG = {
   }
 };
 window.onNativeEvent = function (type, data) {
-  if (type === 'resume') { try { Library.render(); } catch (e) {} return false; }
+  if (type === 'resume') { try { Library.render(); } catch (e) {} try { if (Cloud.active().length && Cloud.ready()) Cloud.run(); } catch (e) {} try { Upd.onResume(); } catch (e) {} return false; }
   if (type === 'picked') Library.onNativePicked(typeof data === 'string' ? JSON.parse(data) : data);
   else if (type === 'back') return App.back();
   else if (type === 'perm') Settings.render();
   else if (type === 'http') Cloud.onHttp(typeof data === 'string' ? JSON.parse(data) : data);
+  else if (type === 'apk') { try { Upd.onApk(data); } catch (e) {} }
   return false;
 };
 

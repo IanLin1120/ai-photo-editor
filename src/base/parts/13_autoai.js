@@ -13,7 +13,7 @@ const AutoAI = {
       gy[i] = B[i + W - 1] + 2 * B[i + W] + B[i + W + 1] - B[i - W - 1] - 2 * B[i - W] - B[i - W + 1];
       mag[i] = Math.hypot(gx[i], gy[i]);
     }
-    const sorted = Array.from(mag.filter((v, i) => i % 7 === 0)).sort((a, b) => a - b); const thr = Math.max(40, sorted[Math.floor(sorted.length * 0.88)] || 40);
+    const sorted = Array.from(mag.filter((v, i) => i % 7 === 0)).sort((a, b) => a - b); const thr = Math.max(28, sorted[Math.floor(sorted.length * (this.soft ? 0.8 : 0.88))] || 28);
     const TB = 360, D = Math.ceil(Math.hypot(W, H)), acc = new Float32Array(TB * (2 * D + 1));
     const cs = new Float32Array(TB), sn = new Float32Array(TB); for (let t = 0; t < TB; t++) { const a = t * Math.PI / TB; cs[t] = Math.cos(a); sn[t] = Math.sin(a); }
     const pts = [];
@@ -27,14 +27,14 @@ const AutoAI = {
       for (let k = -4; k <= 4; k++) { const t = (tc + k + TB) % TB; const r = Math.round(x * cs[t] + y * sn[t]); acc[t * (2 * D + 1) + r + D] += mag[i] / 255; }
     }
     // 找峰值
-    const peaks = []; const minV = Math.min(W, H) * 0.08 * 2;
+    const peaks = []; const minV = Math.min(W, H) * (this.soft ? 0.05 : 0.08) * 2;
     for (let t = 0; t < TB; t++) for (let r = 0; r < 2 * D + 1; r++) {
       const v = acc[t * (2 * D + 1) + r]; if (v < minV) continue; let ok = true;
       for (let dt = -4; dt <= 4 && ok; dt++) for (let dr = -6; dr <= 6; dr++) { const tt = (t + dt + TB) % TB, rr = r + dr; if (rr < 0 || rr > 2 * D) continue; if (acc[tt * (2 * D + 1) + rr] > v) { ok = false; break; } }
       if (ok) peaks.push([v, t, r - D]);
     }
     peaks.sort((a, b) => b[0] - a[0]);
-    const segs = []; const minLen = Math.min(W, H) * 0.07;
+    const segs = []; const minLen = Math.min(W, H) * (this.soft ? 0.045 : 0.07);
     for (const [, t, r] of peaks.slice(0, 90)) {
       const c = cs[t], s = sn[t]; const dir = [-s, c]; const ts = [];
       for (const i of pts) { const x = i % W, y = (i / W) | 0; if (Math.abs(x * c + y * s - r) > 1.2) continue; let a = Math.atan2(gy[i], gx[i]); if (a < 0) a += Math.PI; const da = Math.abs(a - t * Math.PI / TB); if (Math.min(da, Math.PI - da) > 0.15) continue; ts.push(x * dir[0] + y * dir[1]); }
@@ -46,9 +46,39 @@ const AutoAI = {
     return segs;
   },
   /* ---------- AI 拉正：讓垂直線真正垂直、水平線真正水平（旋轉＋垂直／水平透視） ---------- */
+  /* v1.14：沒有明顯直線的畫面（森林、山景、人物）也能判斷：統計全畫面「有方向性的邊緣」（樹幹、欄杆、地平線、
+     門窗、人的站姿）——用結構張量算每一處邊緣的方向與可信度，找出最一致的垂直／水平偏差 */
+  orient(id) {
+    const { width: W, height: H, data: d } = id; const N = W * H, L = new Float32Array(N);
+    for (let i = 0; i < N; i++) L[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    const Jxx = new Float32Array(N), Jyy = new Float32Array(N), Jxy = new Float32Array(N);
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const i = y * W + x;
+      const gx = L[i + 1 - W] + 2 * L[i + 1] + L[i + 1 + W] - L[i - 1 - W] - 2 * L[i - 1] - L[i - 1 + W], gy = L[i + W - 1] + 2 * L[i + W] + L[i + W + 1] - L[i - W - 1] - 2 * L[i - W] - L[i - W + 1];
+      Jxx[i] = gx * gx; Jyy[i] = gy * gy; Jxy[i] = gx * gy; }
+    const box = (A) => { const t = new Float32Array(N), o = new Float32Array(N), r = 9;   // 較大的範圍：避免像素鋸齒讓小角度看起來像 0 度
+      for (let y = 0; y < H; y++) { let s = 0; for (let x = -r; x <= r; x++) s += A[y * W + Math.min(W - 1, Math.max(0, x))]; for (let x = 0; x < W; x++) { t[y * W + x] = s; s += A[y * W + Math.min(W - 1, x + r + 1)] - A[y * W + Math.max(0, x - r)]; } }
+      for (let x = 0; x < W; x++) { let s = 0; for (let y = -r; y <= r; y++) s += t[Math.min(H - 1, Math.max(0, y)) * W + x]; for (let y = 0; y < H; y++) { o[y * W + x] = s; s += t[Math.min(H - 1, y + r + 1) * W + x] - t[Math.max(0, y - r) * W + x]; } }
+      return o; };
+    const A = box(Jxx), B = box(Jyy), C = box(Jxy);
+    const binsV = new Float64Array(241), binsH = new Float64Array(241); let tot = 0;
+    for (let y = 4; y < H - 4; y++) for (let x = 4; x < W - 4; x++) { const i = y * W + x, a = A[i], b = B[i], c = C[i], tr = a + b; if (tr < 2e4) continue;
+      const dd = Math.sqrt((a - b) * (a - b) + 4 * c * c), coh = dd / tr; if (coh < 0.55) continue;
+      let ang = 0.5 * Math.atan2(2 * c, a - b) * 180 / Math.PI;   // 梯度主方向（邊緣的法線）
+      let lineDeg = ang + 90; lineDeg = ((lineDeg % 180) + 180) % 180;   // 邊緣（線）的方向
+      const w = coh * coh * Math.sqrt(tr); tot += w;
+      const dv = lineDeg - 90, dh = lineDeg > 90 ? lineDeg - 180 : lineDeg;
+      if (Math.abs(dv) <= 12) binsV[Math.round((dv + 12) * 10)] += w * 1.2;   // 垂直線較可信（重力方向）
+      if (Math.abs(dh) <= 12) binsH[Math.round((dh + 12) * 10)] += w;
+    }
+    const sm = (bn) => { const o = new Float64Array(241); for (let i = 0; i < 241; i++) for (let k = -6; k <= 6; k++) { const j = i + k; if (j >= 0 && j < 241) o[i] += bn[j] * Math.exp(-(k * k) / 18); } return o; };
+    const all = sm(binsV.map((v, i) => v + binsH[i])); let bi = 120, bv = 0, sumv = 0; for (let i = 0; i < 241; i++) { sumv += all[i]; if (all[i] > bv) { bv = all[i]; bi = i; } }
+    const mean = sumv / 241; return { dev: bi / 10 - 12, conf: tot ? Math.min(1, (bv - mean) / (bv + 1e-9)) * Math.min(1, sumv / (tot + 1e-9) * 3) : 0 };
+  },
   upright(ses, edit, mode) {
-    const id = imgData(ses.prev, 900); const segs = this.segments(id);
-    if (segs.length < 2) return null;
+    const id = imgData(ses.prev, 1100); this.soft = false; let segs = this.segments(id);
+    if (segs.length < 6) { this.soft = true; segs = this.segments(id); this.soft = false; }   // 線條不明顯：降低門檻再找一次
+    const ori = this.orient(imgData(ses.prev, 640));
+    if (segs.length < 2) { if (ori.conf < 0.15) return null; const rr = Math.round(clamp(-ori.dev, -12, 12) * 10) / 10; return { rot: rr, vert: 0, horiz: 0, nV: 0, nH: 0, soft: true }; }
     const SW = ses.SW, SH = ses.SH;
     const ang = (s) => { const dx = (s.b[0] - s.a[0]) * SW, dy = (s.b[1] - s.a[1]) * SH; let a = Math.atan2(dy, dx) * 180 / Math.PI; if (a < 0) a += 180; return a; };
     const V = segs.filter((s) => Math.abs(ang(s) - 90) < 30), Hs = segs.filter((s) => { const a = ang(s); return a < 20 || a > 160; });
@@ -56,10 +86,11 @@ const AutoAI = {
     const cost = (rot, vert, horiz) => {
       const e = clone(base); e.geo.rot = rot; e.geo.vert = vert; e.geo.horiz = horiz; const G = Engine.geometry(e, SW, SH, full);
       const dev = (s, vertical) => { const p = Engine.srcToOut(G, s.a), q = Engine.srcToOut(G, s.b); const dx = (q[0] - p[0]) * G.OW, dy = (q[1] - p[1]) * G.OH; let a = Math.atan2(dy, dx) * 180 / Math.PI; if (a < 0) a += 180; const d = vertical ? a - 90 : (a > 90 ? a - 180 : a); return Math.min(d * d, 36); };
-      let c = 0, w = 0; const wv = mode === 'level' ? 1 : 1.4, wh = mode === 'vertical' ? 0.35 : 1;
+      let c = 0, w = 0; const wv = mode === 'level' ? 1 : 1.4, wh = mode === 'vertical' ? 0.35 : mode === 'auto' && V.length >= 2 ? 0.45 : 1;   // 建築的水平線受透視影響常不是真的水平：自動模式以垂直線（重力方向）為主
       for (const s of V) { c += dev(s, true) * s.len * wv; w += s.len * wv; } for (const s of Hs) { c += dev(s, false) * s.len * wh; w += s.len * wh; }
       const reg = mode === 'auto' ? 0.0009 * (vert * vert + horiz * horiz) : 0;
-      return (w ? c / w : 0) + reg;
+      const nSeg = V.length + Hs.length, pw = ori.conf * (nSeg < 4 ? 1.2 : nSeg < 10 ? 0.4 : 0.1), rr = rot + ori.dev;
+      return (w ? c / w : 0) + reg + pw * rr * rr;
     };
     const r0 = (base.geo.rot || 0); let best = { rot: r0, vert: 0, horiz: 0, c: cost(r0, 0, 0) };
     for (let r = -10; r <= 10; r += 0.25) { const c = cost(r, 0, 0); if (c < best.c) best = { rot: r, vert: 0, horiz: 0, c }; }
@@ -74,7 +105,8 @@ const AutoAI = {
           }
         }
       }
-      if (mode === 'auto' && V.length < 2) { best.vert = 0; best.horiz = 0; }
+      // 自動模式：線條太少時透視不可信，只做旋轉；透視幅度也限制在合理範圍
+      if (mode === 'auto') { if (V.length < 4) best.vert = 0; if (Hs.length < 4) best.horiz = 0; best.vert = clamp(best.vert, -30, 30); best.horiz = clamp(best.horiz, -25, 25); if (V.length + Hs.length < 4) best.rot = clamp(-ori.dev, -12, 12); }
     }
     return { rot: Math.round(best.rot * 10) / 10, vert: Math.round(best.vert), horiz: Math.round(best.horiz), nV: V.length, nH: Hs.length, before: cost(r0, base.geo.vert || 0, base.geo.horiz || 0), after: best.c };
   },

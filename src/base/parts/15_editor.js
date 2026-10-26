@@ -563,7 +563,7 @@ const Editor = {
   },
   runAiEnh() {
     const id = imgData(this.ses.aiPrev || this.ses.prev, 320); this.ses.ensureSky();
-    const ex = this.rec.exif || {}; const base = aiEnhance(id, { iso: ex.iso, wb: this.edit.wb === 'shot' ? autoWB(id) : null });
+    const ex = this.rec.exif || {}; const base = aiEnhance(id, { iso: ex.iso, wb: null }); if (this.edit.wb === 'shot') { try { const w = AutoLight.wb(this.ses, this.edit); base.temp = w.temp - (this.edit.temp || 0); base.tint = w.tint - (this.edit.tint || 0); } catch (e) {} }
     const prev = this.edit.aiEnh || {}; if (prev.d) this.aiEnhApply(0);
     Object.assign(this.edit.aiEnh = this.edit.aiEnh || {}, { d: base, skyOn: false });   // v1.13：不再自動加天空遮色片（邊緣會產生白邊光暈），天空亮部改由閉迴路的「亮部」處理
     this.aiEnhApply(100, prev.clear || 0);

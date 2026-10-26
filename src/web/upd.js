@@ -12,6 +12,7 @@ const Upd = {
   /* App 正常開啟：清除失敗計數；之後自動檢查（最多 6 小時一次） */
   boot() {
     try { localStorage.removeItem('aip.otaFail'); } catch (e) {}
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.onResume(); });
     if (CFG.autoUpd === false) return; const last = lsGet('aip.updAt', 0); if (Date.now() - last < 6 * 3600e3) return;
     setTimeout(() => { lsSet('aip.updAt', Date.now()); this.check(false); }, 9000);
   },
@@ -24,7 +25,7 @@ const Upd = {
       say('檢查中…'); const v = await this.manifest(); lsSet('aip.updLast', { v, t: Date.now() }); const apk = this.apk();
       if (isApp && v.minApk && apk && this.gt(v.minApk, apk)) {
         say(`有新版 APK v${v.apkName || v.app}（需要重新安裝）`);
-        this.dialog(`有新版 APK v${this.esc(v.apkName || v.app)}`, `${v.notes ? this.esc(v.notes) + '<br><br>' : ''}這次是大改版（手機端程式有更新），需要下載新的 APK 安裝；直接覆蓋安裝，圖庫與修圖紀錄都會保留。`, [['⬇ 下載最新版 APK', () => this.releases()], ['稍後', null]]); return;
+        this.dialog(`有新版 APK v${this.esc(v.apkName || v.app)}`, `${v.notes ? this.esc(v.notes) + '<br><br>' : ''}這次是大改版（手機端程式有更新），需要安裝新的 APK；會直接覆蓋舊版，圖庫與修圖紀錄都會保留。`, [[this.native() ? '⬇ 下載並安裝' : '⬇ 下載最新版 APK', () => this.installLatest()], ['稍後', null]]); return;
       }
       if (!this.gt(v.app, APP_VERSION)) { say(`已經是最新版本 v${APP_VERSION}`); if (manual) toast('已經是最新版本 v' + APP_VERSION); return; }
       if (!isApp) { say(`有新版本 v${v.app}`); if (manual) this.dialog('有新版本 v' + this.esc(v.app), '網頁版請重新整理或開啟 GitHub 上的最新網頁版。', [['🌐 開啟網頁版', () => this.open(GH.pages)], ['稍後', null]]); return; }
@@ -45,11 +46,38 @@ const Upd = {
       const L = await r.json(), apk = this.apk();
       $('#relL').innerHTML = L.length ? L.map((x, i) => `<div class="relR"><div class="grow"><b>v${this.esc(x.v)}</b>${i === 0 ? ' <span class="tyTag" style="background:#5f9a5a">最新</span>' : ''}${apk && x.v === apk ? ' <span class="tyTag" style="background:#a2613a">目前安裝</span>' : ''}
         <div class="sub">${this.esc(x.date || '')}${x.size ? '・' + (x.size / 1048576).toFixed(1) + ' MB' : ''}</div>${x.notes ? `<div class="sub relN">${this.esc(x.notes).replace(/\n/g, '<br>')}</div>` : ''}</div>
-        <button class="btn sm ${i === 0 ? 'pri' : ''}" data-u="${this.esc(GH.pages + 'apk/' + encodeURIComponent(x.file))}">⬇</button></div>`).join('') : '<div class="sub">GitHub 上還沒有可下載的 APK</div>';
-      $$('#relL [data-u]').forEach((b) => (b.onclick = () => { this.open(b.dataset.u); toast('已用瀏覽器開始下載，完成後點通知安裝（直接覆蓋安裝，資料會保留）', 5000); }));
+        <button class="btn sm ${i === 0 ? 'pri' : ''}" data-v="${this.esc(x.v)}" data-u="${this.esc(GH.pages + 'apk/' + encodeURIComponent(x.file))}">⬇</button></div>`).join('') : '<div class="sub">GitHub 上還沒有可下載的 APK</div>';
+      $$('#relL [data-u]').forEach((b) => (b.onclick = () => this.install(b.dataset.u, b.dataset.v)));
     } catch (e) { $('#relL').textContent = '⚠️ 無法讀取版本清單：' + e.message; }
   },
   open(u) { if (isApp) NAT.call('openUrl', u); else window.open(u, '_blank'); },
+  /* ---------- v1.14：App 內下載並安裝（不用到瀏覽器、不用自己找檔案） ---------- */
+  native() { return !!(isApp && window.AIP2 && AIP2.installApk); },
+  async installLatest() {
+    try { const r = await fetch(GH.pages + 'apks.json?t=' + Date.now(), { cache: 'no-store' }); const L = await r.json(); if (!L.length) throw new Error('沒有可下載的 APK'); this.install(GH.pages + 'apk/' + encodeURIComponent(L[0].file), L[0].v); }
+    catch (e) { toast('無法取得版本清單：' + e.message, 4000); this.releases(); }
+  },
+  install(url, v) {
+    if (!this.native()) { this.open(url); toast('已用瀏覽器開始下載，完成後點通知安裝（直接覆蓋安裝，資料會保留）', 5000); return; }
+    if (!AIP2.canInstall()) {
+      this.pend = { url, v };
+      this.dialog('需要允許安裝', '第一次在 App 內更新，需要允許「AI修圖軟體」安裝應用程式。按「前往設定」打開「允許來自這個來源的應用程式」，回到 App 後會自動繼續下載安裝。', [['前往設定', () => AIP2.askInstall()], ['改用瀏覽器下載', () => { this.pend = null; this.open(url); }], ['取消', () => { this.pend = null; }]]);
+      return;
+    }
+    this.pend = null; this.instUrl = url;
+    this.dialog(`⬇ 更新到 v${this.esc(v || '')}`, '<div id="apkTx" class="sub">準備下載…</div><div class="prog" style="margin-top:8px"><i id="apkBar" style="width:0%"></i></div>', [['在背景繼續', null]]);
+    AIP2.installApk(url);
+  },
+  onResume() { if (this.pend && this.native() && AIP2.canInstall()) { const p = this.pend; this.pend = null; setTimeout(() => this.install(p.url, p.v), 400); } },
+  onApk(d) {
+    try { d = typeof d === 'string' ? JSON.parse(d) : d; } catch (e) { return; }
+    const tx = $('#apkTx'), bar = $('#apkBar'), set = (t, p) => { if (tx) tx.textContent = t; if (bar && p != null) bar.style.width = Math.round(p * 100) + '%'; };
+    if (d.state === 'download') set(d.pct >= 0 ? `下載中 ${Math.round(d.pct * 100)}%` : '下載中…', d.pct >= 0 ? d.pct : null);
+    else if (d.state === 'installing') set('下載完成，準備安裝…', 1);
+    else if (d.state === 'confirm') set('請在系統視窗按「更新」；安裝完成後重新開啟 App 就是新版本（圖庫與修圖紀錄都保留）', 1);
+    else if (d.state === 'done') { set('✓ 安裝完成', 1); toast('✓ 已更新完成', 3000); }
+    else if (d.state === 'error') { const u = this.instUrl; this.dialog('更新沒有完成', this.esc(d.msg || '未知錯誤') + '<br><br>可以改用瀏覽器下載 APK，再點通知安裝（直接覆蓋舊版）。', [['改用瀏覽器下載', () => u && this.open(u)], ['關閉', null]]); }
+  },
   dialog(title, html, btns) {
     let el = $('#updSheet'); if (!el) { el = h('div', { id: 'updSheet' }); document.body.append(el); }
     el.innerHTML = `<div class="plBg"></div><div class="plBox glass"><div class="lab"><span>${title}</span></div><div style="margin:6px 0 12px;line-height:1.6">${html}</div><div class="acts">${btns.map((b, i) => `<button class="btn ${i === 0 ? 'pri' : ''}" data-i="${i}">${b[0]}</button>`).join('')}</div></div>`;

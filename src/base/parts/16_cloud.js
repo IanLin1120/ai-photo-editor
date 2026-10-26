@@ -251,7 +251,7 @@ const Cloud = {
     const notes = []; if (st.relight) notes.push('人像補光：' + st.relight); if (st.beauty) notes.push('人像美顏：' + st.beauty); if (st.erase) notes.push('AI 消除：' + st.erase);
     if (st.rescue) { const q = st.rescue, f = []; if (q.haze >= 0.15) f.push('霧霾'); if (q.backlight >= 0.15) f.push('逆光／前景過暗'); else if (q.hdr >= 0.3) f.push('光比過高'); if (q.under >= 0.3 && !f.length) f.push('曝光不足'); notes.push('救援廢片：' + (f.length ? '偵測到' + f.join('、') + '，已自動修復' : '未發現明顯問題，已做輕度優化') + (q.nr ? '（暗部已 AI 降噪）' : '') + (q.faces ? `，人臉補光 ${q.faces} 張` : '')); }
     if (notes.length) { toast(`「${r.name}」${notes.join('；')}`, 6000); this.noteAt = Date.now(); }
-    await this.syncEditor(id, r);
+    this.later(() => this.syncEditor(id, r));
   },
   /* 編輯器正開著這張：把最新的相片紀錄同步給編輯器（避免關閉時用舊資料覆寫），再重新載入 */
   async syncEditor(id, r) {
@@ -289,7 +289,7 @@ const Cloud = {
     r.edit = normEdit(r.edit || {}); r.edit.ai.on = true; r.edit.ai.model = model === 'hq' ? 'hq' : 'fast'; r.cloudAi = Date.now(); r.edited = true;
     await DB.put('photos', r);
     const lr = Library.recs.find((x) => x.id === id); if (lr) Object.assign(lr, r);
-    try { await Library.rerenderThumb(lr || r); } catch (e) {}
+    this.later(() => Library.rerenderThumb(lr || r));
     if (Editor.active && Editor.rec && Editor.rec.id === id && Editor.ses) {
       Editor.edit.ai.on = true; Editor.ses.fullDn = {}; Editor.ses.aiPrev = null; Editor.ses.setAiPreview(null, ''); Editor.ensureAi(); Editor.renderPanel();
     }
@@ -310,6 +310,10 @@ const Cloud = {
     this.save();
   },
 
+  /* v1.14：不影響佇列的後續動作（重新開啟編輯器、重畫縮圖）延後在背景做，失敗也不會卡住下一個雲端工作 */
+  later(fn) { setTimeout(() => { Promise.resolve().then(fn).catch((e) => console.warn('cloud later', e)); }, 300); },
+  /* 單一步驟逾時：網路或手機睡眠造成某個請求一直沒回應時，3 分鐘後放棄這一步、下一輪重試 */
+  step(p, ms = 180000) { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => { const e = new TypeError('步驟逾時'); rej(e); }, ms); })]).finally(() => clearTimeout(t)); },
   bg() {
     const a = this.active(); if (!a.length) return;
     const total = a.reduce((s, j) => s + j.items.length, 0); const run = a.filter((j) => j.state === 'running').length;
@@ -317,16 +321,20 @@ const Cloud = {
     BG.set('cloud', `雲端 AI：${total} 張處理中${j && j.msg ? '・' + j.msg : ''}`, j && j.pn ? Math.round((j.pk || 0) / j.pn * 100) : 0);
   },
   async run() {
-    if (this.running) return; this.running = true;
+    // 看門狗：上一輪若已超過 4 分鐘沒有動靜（被系統凍結或卡住），直接接手；舊的迴圈發現世代不同會自行結束
+    if (this.running && Date.now() - (this.beat || 0) < 240000) return;
+    const gen = this.gen = (this.gen || 0) + 1; this.running = true; this.beat = Date.now();
     try {
-      while (this.active().length) {
-        this.bg();
+      while (this.active().length && gen === this.gen) {
+        this.beat = Date.now(); this.bg();
         for (const j of this.active()) {
           try {
-            if (j.state === 'queued' || (j.state === 'uploading' && !j.uploaded)) await this.upload(j);
-            else if (j.state === 'uploading' && j.uploaded) { j.state = 'queued'; j.uploaded = false; await this.cleanup(j); await this.upload(j); }
-            else if (j.state === 'running') await this.poll(j);
-            else if (j.state === 'downloading') await this.fetchResults(j);
+            if (gen !== this.gen) return;
+            this.beat = Date.now();
+            if (j.state === 'queued' || (j.state === 'uploading' && !j.uploaded)) await this.step(this.upload(j), 600000);
+            else if (j.state === 'uploading' && j.uploaded) { j.state = 'queued'; j.uploaded = false; await this.step(this.cleanup(j)); await this.step(this.upload(j), 600000); }
+            else if (j.state === 'running') await this.step(this.poll(j));
+            else if (j.state === 'downloading') await this.step(this.fetchResults(j), 600000);
           } catch (e) {
             console.warn('cloud', e);
             if (e instanceof TypeError || e.status >= 500 || e.status === 429) { j.msg = '網路中斷，稍後重試'; j.retry = (j.retry || 0) + 1; this.save(); if (j.retry < 40) continue; }
@@ -340,6 +348,7 @@ const Cloud = {
         await sleep(15000);
       }
     } finally {
+      if (gen !== this.gen) return;   // 已由新的迴圈接手
       this.running = false; BG.end('cloud');
       const fin = this.jobs.filter((j) => j.state === 'done' && !j.notified); const n = fin.reduce((s, j) => s + (j.doneIds || []).length, 0);
       const bad = this.jobs.filter((j) => j.state === 'error' && !j.notified);

@@ -13,11 +13,11 @@ const AutoLight = {
       const i = (y * W + x) * 4, r = d[i], g = d[i + 1], b = d[i + 2], L = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
       const k = Math.min(1023, (L * 1023) | 0); hist[k]++; n++; lg += Math.log(s2l(L) + 0.004);
       const dx = (x / W - 0.5) / 0.5, dy = (y / H - 0.55) / 0.5, wc = Math.max(0, 1 - (dx * dx + dy * dy) * 0.7); histC[k] += wc; nc += wc;   // 中央加權（主體多半在中間偏下）
-      const mx = Math.max(r, g, b), mn = Math.min(r, g, b); if (mx >= 251) clip++; sat += mx ? (mx - mn) / mx : 0;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b); if (mx >= 245) clip++;   // RAW 感光元件飽和處畫成約 249（不是 255），也算過曝 sat += mx ? (mx - mn) / mx : 0;
     }
     const P = (hh, tot, p) => { let c = 0; const t = tot * p; for (let i = 0; i < 1024; i++) { c += hh[i]; if (c >= t) return i / 1023; } return 1; };
     const q = (p) => P(hist, n, p);
-    return { p005: q(0.005), p02: q(0.02), p05: q(0.05), p10: q(0.10), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95), p99: q(0.99), p995: q(0.995), c50: P(histC, nc, 0.5), clip: clip / n, sat: sat / n, lav: l2s(Math.max(0, Math.exp(lg / n) - 0.004)) };
+    return { p005: q(0.005), p02: q(0.02), p05: q(0.05), p10: q(0.10), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95), p99: q(0.99), p995: q(0.995), q, c50: P(histC, nc, 0.5), clip: clip / n, sat: sat / n, lav: l2s(Math.max(0, Math.exp(lg / n) - 0.004)) };
   },
   render(ses, e) { return ses.renderThumb(effective(e), 256); },
   /* 回傳調好的六個光線參數（絕對值） */
@@ -43,8 +43,10 @@ const AutoLight = {
     }
     const ev0 = e.exposure;
     // ② 亮部：最亮 1% 不超過門檻、死白面積壓到 0.3% 以下（天空、雲、霧找回層次）
+    // RAW 裡已經完全過曝（三色都到感光元件上限）的區域沒有資料可救，不拿它來判斷，以免為了它把其他亮部全部壓灰
+    const cb = Math.min(0.2, s0.clip), pH = Math.max(0.5, 0.99 - cb);
     for (let k = 0; k < 4; k++) {
-      const over = Math.max(0, s.p99 - hiT) * 300 + Math.max(0, s.clip - 0.003) * 3500; if (over < 2 || e.highlights <= -100) break;
+      const over = Math.max(0, s.q(pH) - hiT) * 300 + Math.max(0, s.clip - cb - 0.003) * 3500; if (over < 2 || e.highlights <= -100) break;
       e.highlights = Math.round(clamp(e.highlights - over, -100, 0)); R();
     }
     // ③ 陰影：最暗 10% 要看得見細節（依 ISO 節制）
@@ -57,8 +59,8 @@ const AutoLight = {
     { let dEv = clamp(Math.log2(s2l(tmE) / Math.max(s2l(mid(s)), 1e-4)) * 0.5, -0.3, 0.3); if (hdr || s.p10 < shT * 0.9) dEv = Math.max(dEv, 0); if (Math.abs(dEv) > 0.05) { e.exposure = clamp(Math.round((ev0 + dEv) * 100) / 100, -evLim - 0.3, evLim + 0.3); R(); } }
     // ⑤ 白色／黑色：補足明暗範圍；霧、逆光柔光場景黑色不壓太重
     const wT = highKey ? 0.985 : 0.965;
-    if (s.clip < 0.004 && s.p995 < wT - 0.02) e.whites = Math.round(clamp((wT - s.p995) * 110, 0, 35));
-    else if (s.clip > 0.008) e.whites = Math.round(clamp(-(s.clip - 0.004) * 2500, -40, 0));
+    if (s.clip < 0.004 + cb && s.q(Math.max(0.5, 0.995 - cb)) < wT - 0.02 && cb < 0.004) e.whites = Math.round(clamp((wT - s.p995) * 110, 0, 35));
+    else if (s.clip > cb + 0.008) e.whites = Math.round(clamp(-(s.clip - cb - 0.004) * 2500, -40, 0));
     const hazy = s.p02 > 0.12 && !night, bT = night ? 0.012 : 0.022;
     e.blacks = Math.round(clamp((bT - s.p005) * 260, hazy ? -22 : -40, 12));
     R();
@@ -75,7 +77,7 @@ const AutoLight = {
     for (let i = 0; i < d.length; i += 4) {
       const R = s2l(d[i] / 255), G = s2l(d[i + 1] / 255), B = s2l(d[i + 2] / 255), mx = Math.max(R, G, B), mn = Math.min(R, G, B), Y = 0.2126 * R + 0.7152 * G + 0.0722 * B;
       if (Y > 0.35) { hiN++; if (R > B * 1.35) warmHi++; }
-      if (mx > 0.95 || Y < 0.03 || (mx - mn) / mx > 0.28) continue;
+      if (mx > 0.9 || Y < 0.03 || (mx - mn) / mx > 0.16) continue;   // 只用真正接近中性灰的地方（樹葉、草地不算）
       r += R; g += G; b += B; n++;
     }
     const N = d.length / 4; if (n < N * 0.03) return { temp: edit.temp, tint: edit.tint, note: '畫面中可判斷的中性色太少，保留原本白平衡' };
@@ -83,8 +85,8 @@ const AutoLight = {
     let t = Math.log(b / r) / 0.72 * 100 * 0.85, m = Math.log(g / Math.sqrt(r * b)) / 0.24 * 100 * 0.8;
     const golden = hiN > N * 0.05 && warmHi > hiN * 0.5;     // 大面積暖色亮部：夕陽、晨光、燈光氛圍 → 不往冷色拉
     if (golden && t < 0) t *= 0.15;
-    t *= 0.6; m *= 0.6;                                    // 只修正 60%，保留現場氣氛
-    if (Math.abs(t) < 4) t = 0; if (Math.abs(m) < 3) m = 0;
+    t *= 0.6; m *= 0.4;                                    // 只修正一部分，保留現場氣氛（色調更保守）
+    if (Math.abs(t) < 5) t = 0; if (Math.abs(m) < 5) m = 0;
     return { temp: clamp(Math.round(edit.temp + t), -100, 100), tint: clamp(Math.round(edit.tint + m), -100, 100), note: golden ? '偵測到暖色光線，保留氛圍' : '' };
   }
 };

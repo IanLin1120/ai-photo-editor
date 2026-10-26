@@ -40,3 +40,9 @@
 #updSheet .plBox{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(460px,calc(100% - 24px));max-height:80vh;overflow:auto;border-radius:24px;padding:14px 16px;background:var(--solid)}
 #updSheet .plBox .lab span{font-weight:800;font-size:16.5px}
 #updSheet .btn.pri{background:var(--ac);color:#fff;border:0}
+/* v1.14：分段按鈕（例如「問題類型」）放不下時整排換到下一行、按鈕平均分配寬度，不再擠成兩行不平均 */
+.lbl2{flex-wrap:wrap}
+.lbl2>span:first-child{flex:1 1 auto;min-width:0}
+.lbl2>.seg,.lab>.seg,.aicard>.seg,.acts>.seg{display:flex;flex:1 0 auto;flex-wrap:nowrap;max-width:100%;overflow-x:auto;scrollbar-width:none}
+.lbl2>.seg::-webkit-scrollbar,.lab>.seg::-webkit-scrollbar{display:none}
+.lbl2>.seg .btn,.lab>.seg .btn,.aicard>.seg .btn,.acts>.seg .btn{flex:1 0 auto;justify-content:center;white-space:nowrap}

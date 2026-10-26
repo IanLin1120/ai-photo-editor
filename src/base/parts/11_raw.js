@@ -94,9 +94,11 @@ function rawCanvas(img, k) {
   for (let i = 0; i <= NT + 1; i++) { const q = i / NT, v = q * q * VMAX; let t = rawShoulder(oetfN(v)); if (t > 0.8) t = 0.8 + (t - 0.8) * hf; TT[i] = eotfN(Math.min(1, t)); }
   const tc = (v) => { if (v <= 0) return 0; let f = Math.sqrt(v / VMAX) * NT; if (f >= NT) return TT[NT]; const fi = f | 0; return TT[fi] + (TT[fi + 1] - TT[fi]) * (f - fi); };
   const NO = 16384, OE = new Uint8ClampedArray(NO + 1); for (let i = 0; i <= NO; i++) OE[i] = Math.round(oetfN(i / NO) * 255);
-  const rgba = new Uint8ClampedArray(n * 4), o8 = (v) => OE[v <= 0 ? 0 : v >= 1 ? NO : (v * NO + 0.5) | 0];
+  const ik = 1 / k, rgba = new Uint8ClampedArray(n * 4), o8 = (v) => OE[v <= 0 ? 0 : v >= 1 ? NO : (v * NO + 0.5) | 0];
   for (let i = 0, j = 0, q = 0; i < n; i++, j += ch, q += 4) {
-    const r = LIN[src[j]] * k, g = LIN[src[j + 1]] * k, b = LIN[src[j + 2]] * k;
+    let r = LIN[src[j]] * k, g = LIN[src[j + 1]] * k, b = LIN[src[j + 2]] * k;
+    // 接近感光元件飽和（過曝）的像素：各色版被裁切的程度不同會帶出粉紫／青色，逐漸轉為中性白，和 Lightroom 一樣
+    { const m = (r > g ? (r > b ? r : b) : (g > b ? g : b)) * ik; if (m > 0.88) { const w = Math.min(1, (m - 0.88) / 0.12), t = w * w * (3 - 2 * w), Yc = 0.2126 * r + 0.7152 * g + 0.0722 * b; r += (Yc - r) * t; g += (Yc - g) * t; b += (Yc - b) * t; } }
     let R, G, B;
     if (r >= g) {
       if (g >= b) { R = tc(r); B = tc(b); G = r > b ? B + (R - B) * (g - b) / (r - b) : R; }         // r ≥ g ≥ b
