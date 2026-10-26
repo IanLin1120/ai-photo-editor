@@ -59,3 +59,4 @@
 #expPill{position:fixed;z-index:280;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 96px);width:min(420px,calc(100% - 24px));border-radius:20px;padding:8px 8px 8px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;cursor:pointer;font-weight:700;font-size:14px}
 #expPill .grow{flex:1;min-width:0}#expPill .prog{flex:1 0 100%;order:9;margin:0}
 #expPill .ib{width:34px;height:34px;border-radius:50%;border:1px solid var(--edge);background:rgba(255,255,255,.3);color:var(--ink);font-size:15px;font-family:inherit}
+#pplPill .ib.on{background:var(--ac);color:#fff;border:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 35%,transparent)}

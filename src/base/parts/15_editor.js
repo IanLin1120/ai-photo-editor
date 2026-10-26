@@ -995,6 +995,7 @@ const Editor = {
   pplPath(c, p) { c.beginPath(); for (const poly of p.polys) { poly.forEach((q, k) => { const s = this.srcToScr(q); k ? c.lineTo(s[0], s[1]) : c.moveTo(s[0], s[1]); }); c.closePath(); } },
   drawPeople(x, dpr) {
     const P = this.ppl; if (!P || !P.on || P.rec !== this.rec.id) return;
+    const d = this.drag; if (d && d.kind === 'lasso' && d.scr.length > 1) { x.save(); x.lineWidth = 2.5 * dpr; x.setLineDash([8 * dpr, 6 * dpr]); x.strokeStyle = '#fff'; x.shadowColor = 'rgba(0,0,0,.6)'; x.shadowBlur = 4 * dpr; x.fillStyle = 'rgba(255,255,255,.15)'; x.beginPath(); d.scr.forEach((q, k) => (k ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]))); x.closePath(); x.fill(); x.stroke(); x.restore(); }
     P.list.forEach((p, i) => {
       x.save(); this.pplPath(x, p);
       if (P.sel.has(i)) { x.fillStyle = 'rgba(255,255,255,.5)'; x.fill(); x.lineWidth = 2.2 * dpr; x.strokeStyle = 'rgba(255,255,255,.95)'; x.stroke(); }
@@ -1012,12 +1013,13 @@ const Editor = {
     let el = $('#pplPill'); const P = this.ppl;
     if (!P || !P.on) { if (el) el.remove(); return; }
     if (!el) { el = h('div', { id: 'pplPill', class: 'glass' }); $('#stage').append(el); }
-    el.innerHTML = ''; el.append(h('button', { class: 'ib', onclick: () => { P.on = false; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '✕'),
-      h('div', { class: 'grow' }, h('b', null, `消除選取的人物（${P.sel.size}）`), h('div', { class: 'sub' }, '點人物切換：白色＝消除、虛線＝保留')),
-      h('button', { class: 'ib ok', disabled: !P.sel.size, onclick: () => this.applyPeople() }, '✓'));
+    el.innerHTML = ''; el.append(h('button', { class: 'ib', onclick: () => { P.on = false; P.lasso = false; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '✕'),
+      h('div', { class: 'grow' }, h('b', null, this.pplWork || `消除選取的項目（${P.sel.size}）`), h('div', { class: 'sub' }, P.lasso ? '⭕ 用手指圈出物件；點一下可切換選取' : '點一下切換：白色＝消除、虛線＝保留')),
+      h('button', { class: 'ib' + (P.lasso ? ' on' : ''), title: '圈選物件', onclick: () => { P.lasso = !P.lasso; this.pplPill(); } }, '⭕'),
+      h('button', { class: 'ib ok', disabled: !P.sel.size || !!this.pplWork, onclick: () => this.applyPeople() }, '✓'));
   },
   /* v1.17：在手機上偵測（數秒），選好後只把「要消除的人」送到雲端 AI 消除（LaMa） */
-  async detectPeople() {
+  async detectPeople(opt = {}) {
     if (this.pplBusy || !this.ses) return; const id = this.rec.id;
     const say = (t) => { this.pplBusy = t; const b = $('#pplBtn'); if (b) b.textContent = t; };
     say('準備中…'); this.renderPanel();
@@ -1026,10 +1028,25 @@ const Editor = {
       await DB.put('ai', { list: L, t: Date.now(), on: 'device' }, 'people:' + id);
       if (!this.rec || this.rec.id !== id) return;
       this.ppl = null; await this.loadPeople();
-      if (L.length) { this.ppl.on = true; this.pplPill(); this.drawOverlay(); toast(`👥 偵測到 ${L.length} 位人物（${(People.lastMs / 1000).toFixed(1)} 秒）：白色＝要消除，點人物可切換`, 4000); }
-      else toast('畫面中沒有偵測到人物', 3000);
+      if (opt.lasso) { this.ppl.sel.clear(); this.ppl.on = true; this.ppl.lasso = true; this.pplPill(); this.drawOverlay(); toast('⭕ 用手指圈出要消除的物件（可以圈很多次）', 3500); }
+      else if (L.length) { this.ppl.on = true; this.pplPill(); this.drawOverlay(); toast(`👥 偵測到 ${L.length} 位人物：白色＝要消除，點人物可切換；也可以按 ⭕ 圈選其他物件`, 4500); }
+      else toast('畫面中沒有偵測到人物，可以按「⭕ 圈選物件」自己圈', 3500);
     } catch (e) { console.error(e); toast('人物偵測失敗：' + e.message, 5000); }
     finally { this.pplBusy = null; if (this.tool === 'aifix') this.renderPanel(); }
+  },
+  async doLasso(pts) {
+    const P = this.ppl, id = this.rec.id; if (this.pplWork) return;
+    this.pplWork = 'AI 偵測圈選範圍…'; this.pplPill();
+    try {
+      const r = await People.lasso(this.ses.prev, pts, P.list, (t) => { this.pplWork = t; this.pplPill(); });
+      if (this.ppl !== P) return;
+      r.hitOld.forEach((i) => P.sel.add(i));
+      for (const o of r.add) { P.list.push(o); P.sel.add(P.list.length - 1); }
+      const names = [...new Set([...r.add.map((o) => o.name), ...r.hitOld.map((i) => P.list[i].kind === 'obj' ? P.list[i].name : '人')])];
+      toast(`已選取 ${r.add.length + r.hitOld.length} 個：${names.join('、')}`, 2500);
+      DB.put('ai', { list: P.list, t: Date.now(), on: 'device' }, 'people:' + id).catch(() => {});
+    } catch (e) { console.error(e); toast('圈選偵測失敗：' + e.message, 4000); }
+    finally { this.pplWork = null; this.pplPill(); this.drawOverlay(); if (this.tool === 'aifix') this.renderPanel(); }
   },
   async applyPeople() {
     const P = this.ppl, id = this.rec.id, sel = [...P.sel].map((i) => P.list[i]); if (!sel.length) return;
@@ -1038,7 +1055,8 @@ const Editor = {
     for (const p of sel) {
       const bh = (p.box[3] - p.box[1]) * hh; x.lineWidth = Math.max(w * 0.004, bh * 0.07);   // 輪廓外擴：頭髮、衣角、邊緣殘影一起消除
       for (const poly of p.polys) { x.beginPath(); poly.forEach((q, k) => (k ? x.lineTo(q[0] * w, q[1] * hh) : x.moveTo(q[0] * w, q[1] * hh))); x.closePath(); x.fill(); x.stroke(); }
-      // 腳下的影子：底部往下多延伸一點
+      // 腳下的影子：底部往下多延伸一點（只有人）
+      if (p.kind === 'obj') continue;
       const bx0 = p.box[0] * w, bx1 = p.box[2] * w, by = p.box[3] * hh; x.beginPath(); x.ellipse((bx0 + bx1) / 2, by, (bx1 - bx0) * 0.55, bh * 0.05, 0, 0, 7); x.fill();
     }
     const mask = await canvasBlob(c, 'image/png'); c.width = c.height = 1;
@@ -1103,15 +1121,17 @@ const Editor = {
       h('div', { class: 'note' }, '處理順序：消除拖影 → 消除反光 → AI 消除 → 救援廢片 → 畫質增強 → 人像補光 → 人像美顏。完成後會成為這張相片的新原圖（所有調整、遮色片都會保留），隨時可「還原原圖」。若有開 AI 降噪，雲端會一併重新降噪。一張 2400 萬像素約 5–20 分鐘，可切到背景，進度會顯示在這裡與通知列。'));
   },
   peopleCard(job) {
-    const box = h('div', { class: 'aicard' }, h('h4', null, '👥 移除多餘人物'), h('div', { class: 'sub' }, '像 Lightroom：AI 在手機上找出畫面中的每一個人並沿著輪廓框起來（幾秒完成，第一次使用會先下載約 31 MB 的模型），點選要消除的人（白色＝消除、虛線＝保留），按 ✓ 後送到雲端用周圍背景自然補上。'));
+    const box = h('div', { class: 'aicard' }, h('h4', null, '👥 移除人物與物件'), h('div', { class: 'sub' }, '像 Lightroom：AI 在手機上找出畫面中的每一個人（連同背包、隨身物品）並沿著輪廓框起來；也可以按「⭕ 圈選物件」用手指圈出其他東西，AI 會自動描出物件輪廓，可以圈很多個。白色＝消除、虛線＝保留，按 ✓ 後送到雲端自然補上背景。第一次使用會先下載約 54 MB 的模型。'));
     const P = this.ppl && this.ppl.rec === this.rec.id ? this.ppl : null;
     if (!P) { this.loadPeople().then(() => this.tool === 'aifix' && this.renderPanel()); return box; }
     if (this.pplBusy) { box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', id: 'pplBtn', disabled: true }, this.pplBusy))); return box; }
     if (P.list.length) box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', disabled: !!job, onclick: () => { P.on = true; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, P.on ? `選取中（${P.sel.size}/${P.list.length}）` : `選擇要消除的人物（${P.list.length} 位）`),
       P.on ? h('button', { class: 'btn sm', onclick: () => { P.list.forEach((_, i) => P.sel.add(i)); this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '全選') : null,
       P.on ? h('button', { class: 'btn sm', onclick: () => { P.sel.clear(); this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '全不選') : null,
+      h('button', { class: 'btn sm', disabled: !!job, onclick: () => { P.on = true; P.lasso = true; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '⭕ 圈選物件'),
       h('button', { class: 'btn sm', onclick: () => this.detectPeople() }, '重新偵測')));
-    else box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', id: 'pplBtn', disabled: !!job, onclick: () => this.detectPeople() }, P.none ? '👥 偵測畫面中的人物' : '沒有偵測到人物・重新偵測')));
+    else box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', id: 'pplBtn', disabled: !!job, onclick: () => this.detectPeople() }, P.none ? '👥 偵測畫面中的人物' : '沒有偵測到人物・重新偵測'),
+      h('button', { class: 'btn', disabled: !!job, onclick: () => this.detectPeople({ lasso: true }) }, '⭕ 圈選物件')));
     if (job) box.append(h('div', { class: 'sub' }, '這張相片正在雲端處理中，完成後再選擇。'));
     return box;
   },
@@ -1301,7 +1321,7 @@ const Editor = {
   toolDown(p) {
     const G = this.last.G; const tolS = 26 * this.dpr;
     if (this.tool === 'aifix' && this.ppl && this.ppl.on && this.ppl.rec === this.rec.id) {
-      const i = this.pplHit(p); if (i >= 0) { this.ppl.sel.has(i) ? this.ppl.sel.delete(i) : this.ppl.sel.add(i); this.pplPill(); this.drawOverlay(); } return true;
+      this.drag = { kind: 'lasso', scr: [p], pts: [this.scrToSrc(p)], len: 0 }; return true;
     }
     if (this.tool === 'aifix' && this.erasePaint) {
       const em = this.eraseMaskFor(); const st = { pts: [this.scrToSrc(p)], size: this.eraseSize || 0.03, feather: 0.1, flow: 1, erase: !!this.eraseRubber };
@@ -1352,6 +1372,7 @@ const Editor = {
   },
   toolMove(p) {
     const d = this.drag; if (!d) return;
+    if (d.kind === 'lasso') { if (!this.ppl.lasso) return; const l = d.scr[d.scr.length - 1], dd = Math.hypot(p[0] - l[0], p[1] - l[1]); if (dd > 3 * this.dpr) { d.len += dd; d.scr.push(p); d.pts.push(this.scrToSrc(p)); this.drawOverlay(); } return; }
     if (d.kind === 'erase') { const s = this.scrToSrc(p); const last = d.st.pts[d.st.pts.length - 1]; if (Math.hypot((s[0] - last[0]) * this.ses.SW, (s[1] - last[1]) * this.ses.SH) > d.st.size * Math.max(this.ses.SW, this.ses.SH) * 0.2) d.st.pts.push(s); this.hover = p; this.drawOverlay(); return; }
     if (d.kind === 'crop') {
       const G = this.last.G; const c = this.edit.crop, o = d.orig; const dx = (p[0] - d.start[0]) / this.view.scale / G.OW, dy = (p[1] - d.start[1]) / this.view.scale / G.OH;
@@ -1395,6 +1416,11 @@ const Editor = {
   },
   toolUp(p) {
     const d = this.drag; this.drag = null; if (!d) return;
+    if (d.kind === 'lasso') {
+      if (this.ppl.lasso && d.len > 40 * this.dpr && d.pts.length >= 6) this.doLasso(d.pts);
+      else { const i = this.pplHit(d.scr[0]); if (i >= 0) { this.ppl.sel.has(i) ? this.ppl.sel.delete(i) : this.ppl.sel.add(i); this.pplPill(); } }
+      this.drawOverlay(); return;
+    }
     if (d.kind === 'erase') { this.updEraseInfo && this.updEraseInfo(); return; }
     if (d.kind === 'crop') { this.changed(); this.commit('裁切'); }
     else if (d.kind === 'brush') { this.changed(); this.commit(d.st.erase ? '擦除筆刷' : '筆刷'); }
@@ -1408,7 +1434,8 @@ const Editor = {
       this.selSpot = this.edit.heal.length - 1; this.changed(); this.commit('修復'); this.renderPanel();
     }
   },
-  toolCancel() { if (this.drag && this.drag.kind === 'brush') { const m = this.edit.masks.find((q) => q.id === this.selMask); if (m) m.p.strokes = m.p.strokes.filter((x) => x !== this.drag.st); this.changed(); } this.drag = null; },
+  toolCancel() { if (this.drag && this.drag.kind === 'lasso') { this.drag = null; this.drawOverlay(); return; } this.toolCancel0(); },
+  toolCancel0() { if (this.drag && this.drag.kind === 'brush') { const m = this.edit.masks.find((q) => q.id === this.selMask); if (m) m.p.strokes = m.p.strokes.filter((x) => x !== this.drag.st); this.changed(); } this.drag = null; },
   spotHit(p) {
     const tol = 18 * this.dpr; const L = Math.max(this.ses.SW, this.ses.SH);
     for (let i = this.edit.heal.length - 1; i >= 0; i--) { const sp = this.edit.heal[i];

@@ -3,7 +3,7 @@
 用法：VER=1.11.0 CODE=19 MINAPK=1.11.0 NOTES="…" python3 build.py  → dist/index.html、dist/gh/"""
 import re, os, json, shutil
 H = os.path.dirname(os.path.abspath(__file__)); W = H + '/web/'
-VER = os.environ.get('VER', '1.17.0'); CODE = int(os.environ.get('CODE', '25')); MINAPK = os.environ.get('MINAPK', '1.11.0'); NOTES = os.environ.get('NOTES', '')
+VER = os.environ.get('VER', '1.17.1'); CODE = int(os.environ.get('CODE', '26')); MINAPK = os.environ.get('MINAPK', '1.11.0'); NOTES = os.environ.get('NOTES', '')
 rd = lambda f: open(W + f, encoding='utf8').read()
 P = H + '/base/parts/'; s = ''.join(open(P + f, encoding='utf8').read() for f in json.load(open(P + 'order.json')))
 def rep(old, new, cnt=1):
@@ -40,5 +40,5 @@ rep(old_b, """  batchLoc(list) {
 os.makedirs(H + '/dist/gh', exist_ok=True)
 open(H + '/dist/index.html', 'w', encoding='utf8').write(s)
 open(H + '/dist/gh/index.html', 'w', encoding='utf8').write(s)
-json.dump({'app': VER, 'apk': CODE, 'apkName': VER, 'minApk': MINAPK, 'notes': NOTES}, open(H + '/dist/gh/version.json', 'w', encoding='utf8'), ensure_ascii=False)
+json.dump({'app': VER, 'apk': CODE, 'apkName': os.environ.get('APKNAME', VER), 'minApk': MINAPK, 'notes': NOTES}, open(H + '/dist/gh/version.json', 'w', encoding='utf8'), ensure_ascii=False)
 print(VER, len(s))
