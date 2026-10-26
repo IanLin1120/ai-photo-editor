@@ -1,0 +1,42 @@
+/* ===== v1.11：地點搜尋地圖（行跡導航樣式）、版本與更新 ===== */
+#msView{position:fixed;inset:0;z-index:150;background:var(--bg);display:none}
+#msView.on{display:block}
+#msMap{position:absolute;inset:0}
+#msTop{position:absolute;z-index:3;top:calc(env(safe-area-inset-top) + 8px);left:50%;transform:translateX(-50%);width:min(640px,calc(100% - 16px));border-radius:26px;padding:10px}
+.msBar{display:flex;gap:6px;align-items:center}
+#msBack{font-size:28px;line-height:1;width:34px}
+.msIn{flex:1;display:flex;align-items:center;background:rgba(255,255,255,.5);border:1.5px solid var(--edge);border-radius:18px;padding:2px 4px 2px 14px;min-width:0}
+[data-theme=dark] .msIn{background:rgba(255,255,255,.08)}
+.msIn input{flex:1;border:0;background:none;font-size:17px;padding:10px 4px;min-width:0;color:var(--ink);font-family:inherit}
+.msIn input:focus{outline:none}
+.msIn input::-webkit-search-cancel-button{display:none}
+#msClr{background:rgba(125,108,87,.18);width:34px;height:34px;font-size:16px}
+#msGo{padding:11px 20px;font-size:16px;font-weight:800;background:var(--ac);color:#fff;border:0}
+#msRes{max-height:min(52vh,460px);overflow-y:auto}
+#msRes .gr{display:block;padding:10px 6px;border-bottom:1px solid var(--line);cursor:pointer;color:var(--ink);text-decoration:none}
+#msRes .gr:last-child{border-bottom:0}
+#msRes .gr b{font-size:15.5px}#msRes .gr .sub{display:block;margin-top:2px}
+.gbad{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#4285f4;color:#fff;font-size:11px;font-weight:900;margin-right:6px;vertical-align:1px}
+#msRes .grh{padding:4px 6px 8px;border-bottom:1px solid var(--line)}#msRes .grh small{display:block;color:var(--sub);font-size:12.5px}
+.msFab{position:absolute;z-index:3;right:12px;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;font-size:20px;cursor:pointer;color:var(--ink);font-family:inherit}
+#msLoc{bottom:calc(env(safe-area-inset-bottom) + 30px)}#ms3d{bottom:calc(env(safe-area-inset-bottom) + 88px);font-size:15px}
+#msCard{position:absolute;z-index:4;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 16px);width:min(620px,calc(100% - 16px));border-radius:24px;padding:12px 14px}
+#msCard.hide{display:none}
+#msCard h3{margin:0 0 2px;font-size:17px;color:var(--ink)}
+#msCard .btn.pri{background:var(--ac);color:#fff;border:0}
+.mspin{width:30px;height:30px;border-radius:50% 50% 50% 0;background:var(--ac);transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 4px 10px rgba(0,0,0,.35);cursor:grab}
+.mspin.ph2{width:44px;height:44px;border-radius:12px;transform:none;background-color:#ccc;background-size:cover;background-position:center;border:3px solid #fff;cursor:default}
+.msMe{width:16px;height:16px;border-radius:50%;background:#2f6fd6;border:3px solid #fff;box-shadow:0 0 0 6px rgba(47,111,214,.25)}
+.locBig{display:flex;gap:10px;align-items:center;padding:12px;border-radius:18px;border:1px solid var(--edge);margin:8px 0;cursor:pointer;background:linear-gradient(145deg,rgba(255,255,255,.35),rgba(255,255,255,.06))}
+.locBig .ic{font-size:26px}
+/* 版本與更新 */
+.setRow{display:flex;gap:10px;align-items:center;padding:11px 2px;border-top:1px solid var(--line);cursor:pointer}
+.setRow .ic{font-size:20px;width:28px;text-align:center}
+.tyTag{display:inline-block;color:#fff;border-radius:8px;padding:1px 7px;font-size:11.5px;font-weight:700;vertical-align:1px}
+.relR{display:flex;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.relN{margin-top:3px;line-height:1.5}
+#updSheet{position:fixed;inset:0;z-index:260;display:none}#updSheet.on{display:block}
+#updSheet .plBg{position:absolute;inset:0;background:rgba(20,14,8,.38)}
+#updSheet .plBox{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(460px,calc(100% - 24px));max-height:80vh;overflow:auto;border-radius:24px;padding:14px 16px;background:var(--solid)}
+#updSheet .plBox .lab span{font-weight:800;font-size:16.5px}
+#updSheet .btn.pri{background:var(--ac);color:#fff;border:0}

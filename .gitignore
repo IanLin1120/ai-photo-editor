@@ -1,7 +1,5 @@
-keys/
+src/dist/
+src/android/build/
 *.p12
 *.jks
-node_modules/
-__pycache__/
-src/android/build/
-src/android/assets/
+keys/

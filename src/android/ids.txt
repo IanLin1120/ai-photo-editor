@@ -1,0 +1,3 @@
+com.ian.aiphoto:color/bg = 0x7f010000
+com.ian.aiphoto:mipmap/ic_launcher = 0x7f020000
+com.ian.aiphoto:style/AppTheme = 0x7f030000
