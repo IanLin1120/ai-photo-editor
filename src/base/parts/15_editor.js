@@ -97,6 +97,7 @@ const Editor = {
   async close(silent) {
     if (!this.active) return;
     this.active = false; this.openTok = (this.openTok || 0) + 1; this.rawPill(null); this.busy(null);
+    if (this.ppl) this.ppl.on = false; this.pplPill(); this.ppl = null;
     clearTimeout(this.saveT);
     if (!this.ses) { document.body.classList.remove('editing'); if (!silent) App.show('lib'); Library.refresh(); return; }   // 還在載入就按返回：直接回圖庫
     await this.persist();
@@ -327,8 +328,14 @@ const Editor = {
         this.view = { scale: s, tx: c[0] - ix * s, ty: c[1] - iy * s, fit: false }; this.clampView(); this.requestDisplay();
       } else if (mode === 'pan' && this.panStart) {
         if (this.view.fit && !moved) return;
+        // v1.16：畫面為「符合視窗」大小時左右滑動 → 切換上一張／下一張（依圖庫目前的排序）
+        if (this.view.fit && this.canSwipe() && Math.abs(p[0] - this.panStart[0]) > Math.abs(p[1] - this.panStart[1]) * 1.3) { mode = 'swipe'; this.swipeT0 = Date.now(); }
+        else {
         this.view.tx = this.panStart[2] + p[0] - this.panStart[0]; this.view.ty = this.panStart[3] + p[1] - this.panStart[1]; if (moved) this.view.fit = false; this.clampView(); this.requestDisplay();
-      } else if (mode === 'tool') { this.hover = p; this.toolMove(p, e); }
+        }
+      }
+      if (mode === 'swipe') { this.view.tx = this.panStart[2] + (p[0] - this.panStart[0]) * 0.85; this.requestDisplay(); }
+      else if (mode === 'tool') { this.hover = p; this.toolMove(p, e); }
       else if (mode === 'splitWait') { if (moved) { clearTimeout(this.splitT); mode = 'pan'; } }
       else if (mode === 'split') { this.split = clamp((p[0] - (this.splitGrab || 0)) / ov.width, 0.02, 0.98); this.requestDisplay(); }
     });
@@ -337,6 +344,7 @@ const Editor = {
       if (mode === 'curve') { this.curveUp(); mode = null; return; }
       clearTimeout(this.splitT); if (mode === 'splitWait') mode = 'pan'; if (this.splitArmed) { this.splitArmed = false; this.drawOverlay(); }
       if (mode === 'tool') this.toolUp(p, e);
+      if (mode === 'swipe') { const dx = p[0] - this.panStart[0], dt = Date.now() - (this.swipeT0 || 0); mode = null; pinch = null; moved = false; P.clear(); this.swipeEnd(dx, Math.abs(dx) > ov.width * 0.2 || (Math.abs(dx) > 40 * this.dpr && dt < 260)); return; }
       if (mode === 'pinch' || mode === 'pan') this.scheduleDetail();
       if (P.size === 0) {
         if (!moved && mode === 'pan') { const now = Date.now(); if (now - lastTap < 320 && lastTapPt && Math.hypot(p[0] - lastTapPt[0], p[1] - lastTapPt[1]) < 30 * this.dpr) { this.view.fit ? this.zoomTo(1, p) : this.fit(); lastTap = 0; } else { lastTap = now; lastTapPt = p; } }
@@ -348,9 +356,25 @@ const Editor = {
     ov.addEventListener('wheel', (e) => { e.preventDefault(); const p = this.evPt(e); this.zoomTo(this.view.scale * Math.pow(1.0015, -e.deltaY), p); }, { passive: false });
   },
 
+  canSwipe() {
+    if (this.curveFS || this.cmp === 'split' || this.tool === 'crop' || (this.tool === 'mask' && this.brushActive && this.brushActive())) return false;
+    if (this.tool === 'aifix' && (this.erasePaint || (this.ppl && this.ppl.on))) return false;
+    return Library.filtered().length > 1;
+  },
+  swipeNeighbor(dir) { const L = Library.filtered(), i = L.findIndex((r) => r.id === this.rec.id); return i < 0 ? null : L[i + dir] || null; },
+  swipeEnd(dx, go) {
+    const dir = dx < 0 ? 1 : -1, nx = go ? this.swipeNeighbor(dir) : null;
+    if (!nx) { if (go) toast(dir > 0 ? '已經是最後一張' : '已經是第一張', 1200); this.fit(); return; }
+    // 滑出動畫後開啟下一張
+    const cv = $('#gl'), from = this.view.tx, to = from + (dx < 0 ? -1 : 1) * cv.width, t0 = performance.now();
+    const step = (t) => { const k = Math.min(1, (t - t0) / 160); this.view.tx = from + (to - from) * k * k; this.requestDisplay(); if (k < 1) requestAnimationFrame(step); else this.open(nx); };
+    requestAnimationFrame(step);
+  },
+
   /* ---------- 工具列 ---------- */
   setTool(t) {
     const prev = this.tool; this.tool = t;
+    if (this.ppl && this.ppl.on && t !== 'aifix') { this.ppl.on = false; this.pplPill(); }
     $$('#edTools .tool').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
     if (t === 'presets' && prev !== 'presets') { this.presetBase = clone(this.edit); this.presetSel = null; this.presetAmt = 100; }
     if (t === 'crop' || prev === 'crop') { this.view.fit = true; this.detail = null; }
@@ -959,7 +983,61 @@ const Editor = {
   },
   /* ---------- AI 修復（GitHub 雲端） ---------- */
   eraseMaskFor() { if (!this.eraseMask || this.eraseMask.rec !== this.rec.id) this.eraseMask = { rec: this.rec.id, type: 'brush', p: { strokes: [] } }; return this.eraseMask; },
+  /* ---------- v1.16：移除多餘人物（像 Lightroom）：雲端偵測輪廓 → 點選要消除的人 → 在手機上合成（立即完成） ---------- */
+  async loadPeople() {
+    const id = this.rec.id; if (this.ppl && this.ppl.rec === id) return this.ppl;
+    const d = await DB.get('ai', 'people:' + id).catch(() => null); if (!d || !d.list) { this.ppl = { rec: id, list: [], sel: new Set(), on: false, none: !d }; return this.ppl; }
+    const L = d.list, area = (p) => (p.box[2] - p.box[0]) * (p.box[3] - p.box[1]);
+    // 預設選取「多餘的人」：最大且明顯是主角的那一位不選，其他都選（和 Lightroom 一樣，可再點選調整）
+    const sel = new Set(L.map((_, i) => i)); if (L.length && area(L[0]) > 0.03 && (L.length === 1 || area(L[0]) > 1.8 * area(L[1]))) sel.delete(0);
+    this.ppl = { rec: id, list: L, sel, on: false }; return this.ppl;
+  },
+  pplPath(c, p) { c.beginPath(); for (const poly of p.polys) { poly.forEach((q, k) => { const s = this.srcToScr(q); k ? c.lineTo(s[0], s[1]) : c.moveTo(s[0], s[1]); }); c.closePath(); } },
+  drawPeople(x, dpr) {
+    const P = this.ppl; if (!P || !P.on || P.rec !== this.rec.id) return;
+    P.list.forEach((p, i) => {
+      x.save(); this.pplPath(x, p);
+      if (P.sel.has(i)) { x.fillStyle = 'rgba(255,255,255,.5)'; x.fill(); x.lineWidth = 2.2 * dpr; x.strokeStyle = 'rgba(255,255,255,.95)'; x.stroke(); }
+      else { x.setLineDash([6 * dpr, 4 * dpr]); x.lineWidth = 3 * dpr; x.strokeStyle = 'rgba(0,0,0,.55)'; x.stroke(); x.lineWidth = 1.6 * dpr; x.strokeStyle = '#fff'; x.stroke(); }
+      x.restore();
+    });
+  },
+  pplHit(p) {
+    const P = this.ppl, s = this.scrToSrc(p); let best = -1, ba = 9;
+    const inside = (poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const a = poly[i], b = poly[j]; if ((a[1] > s[1]) !== (b[1] > s[1]) && s[0] < (b[0] - a[0]) * (s[1] - a[1]) / (b[1] - a[1] + 1e-12) + a[0]) c = !c; } return c; };
+    P.list.forEach((q, i) => { const b = q.box, pad = 0.01; const inBox = s[0] > b[0] - pad && s[0] < b[2] + pad && s[1] > b[1] - pad && s[1] < b[3] + pad; if (!inBox) return; const a = (b[2] - b[0]) * (b[3] - b[1]); if ((q.polys.some(inside) || a < 0.002) && a < ba) { ba = a; best = i; } });
+    return best;
+  },
+  pplPill() {
+    let el = $('#pplPill'); const P = this.ppl;
+    if (!P || !P.on) { if (el) el.remove(); return; }
+    if (!el) { el = h('div', { id: 'pplPill', class: 'glass' }); $('#stage').append(el); }
+    el.innerHTML = ''; el.append(h('button', { class: 'ib', onclick: () => { P.on = false; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '✕'),
+      h('div', { class: 'grow' }, h('b', null, `移除選取的人物（${P.sel.size}）`), h('div', { class: 'sub' }, '點選人物以選取／取消選取')),
+      h('button', { class: 'ib ok', disabled: !P.sel.size, onclick: () => this.applyPeople() }, '✓'));
+  },
+  async applyPeople() {
+    const P = this.ppl, id = this.rec.id, sel = [...P.sel].map((i) => P.list[i]); if (!sel.length) return;
+    this.busy('消除人物中…', true);
+    try {
+      const clean = await DB.get('ai', 'pclean:' + id); if (!clean) throw new Error('找不到雲端修補結果，請重新偵測');
+      const full = await this.ses.ensureFull(), W = full.width, H = full.height, L = Math.max(W, H);
+      const cb = await createImageBitmap(clean);
+      // 遮罩：人物輪廓外擴（連同邊緣一起換成修補結果）再羽化，交界自然
+      const m = mkCanvas(W, H), mc = m.getContext('2d'); mc.fillStyle = mc.strokeStyle = '#fff'; mc.lineJoin = 'round';
+      for (const p of sel) { const bh = (p.box[3] - p.box[1]) * H; mc.lineWidth = Math.max(L * 0.004, bh * 0.05); for (const poly of p.polys) { mc.beginPath(); poly.forEach((q, k) => (k ? mc.lineTo(q[0] * W, q[1] * H) : mc.moveTo(q[0] * W, q[1] * H))); mc.closePath(); mc.fill(); mc.stroke(); } }
+      const mb = mkCanvas(W, H), mbc = mb.getContext('2d'); mbc.filter = `blur(${Math.max(2, Math.round(L / 900))}px)`; mbc.drawImage(m, 0, 0); m.width = m.height = 1;
+      const t = mkCanvas(W, H), tc = t.getContext('2d'); tc.drawImage(cb, 0, 0, W, H); cb.close(); tc.globalCompositeOperation = 'destination-in'; tc.drawImage(mb, 0, 0); mb.width = mb.height = 1;
+      const o = mkCanvas(W, H), oc = o.getContext('2d'); oc.drawImage(full, 0, 0); oc.drawImage(t, 0, 0); t.width = t.height = 1;
+      const blob = await canvasBlob(o, 'image/jpeg', 0.97); o.width = o.height = 1;
+      P.on = false; this.pplPill(); await this.persist();
+      await DB.del('ai', 'people:' + id).catch(() => {}); await DB.del('ai', 'pclean:' + id).catch(() => {}); this.ppl = null;
+      await Cloud.applyFix({ id, ops: ['erase'] }, blob, null, { done: ['erase'], erase: `已消除 ${sel.length} 位人物` });
+      this.busy(null);
+    } catch (e) { this.busy(null); console.error(e); toast('消除失敗：' + e.message, 5000); }
+  },
   drawErase(x, ov, dpr) {
+    this.drawPeople(x, dpr);
     const em = this.eraseMask; const has = em && em.rec === this.rec.id && em.p.strokes.length;
     if (has) {
       const oc = this._eoc = this._eoc || document.createElement('canvas'); oc.width = ov.width; oc.height = ov.height; const c = oc.getContext('2d');
@@ -1007,9 +1085,22 @@ const Editor = {
       card('enhance', '✨ AI 畫質增強', '提升模糊、低畫質或裁切過照片的細節與清晰度，尺寸不變（需要放大請用匯出時的「AI 畫質增強 → 放大」）。',
         sl('強度', P.enhance, 'amt', 0, 100, 80)));
     this.updEraseInfo();
+    b.prepend(this.peopleCard(job));
     const sel = Object.keys(Cloud.OPS).filter((k) => P.ops[k]);
     b.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', disabled: !sel.length || !!job, onclick: () => this.sendFix(sel) }, sel.length ? `☁ 送雲端處理（${sel.map((k) => Cloud.OPS[k].replace('AI ', '')).join('＋')}）` : '請先開啟要使用的功能')),
       h('div', { class: 'note' }, '處理順序：消除拖影 → 消除反光 → AI 消除 → 救援廢片 → 畫質增強 → 人像補光 → 人像美顏。完成後會成為這張相片的新原圖（所有調整、遮色片都會保留），隨時可「還原原圖」。若有開 AI 降噪，雲端會一併重新降噪。一張 2400 萬像素約 5–20 分鐘，可切到背景，進度會顯示在這裡與通知列。'));
+  },
+  peopleCard(job) {
+    const box = h('div', { class: 'aicard' }, h('h4', null, '👥 移除多餘人物'), h('div', { class: 'sub' }, '像 Lightroom：AI 找出畫面中的每一個人並沿著輪廓框起來，點選要消除的人（白色＝要消除、虛線＝保留），按 ✓ 就會用周圍背景自然補上。偵測與修補在雲端完成（約 3–8 分鐘），之後選人、消除都在手機上立即完成。'));
+    const P = this.ppl && this.ppl.rec === this.rec.id ? this.ppl : null;
+    if (!P) { this.loadPeople().then(() => this.tool === 'aifix' && this.renderPanel()); return box; }
+    const pj = job && job.kind === 'people';
+    if (P.list.length) box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', onclick: () => { P.on = true; this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, P.on ? `選取中（${P.sel.size}/${P.list.length}）` : `選擇要消除的人物（偵測到 ${P.list.length} 位）`),
+      P.on ? h('button', { class: 'btn sm', onclick: () => { P.list.forEach((_, i) => P.sel.add(i)); this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '全選') : null,
+      P.on ? h('button', { class: 'btn sm', onclick: () => { P.sel.clear(); this.pplPill(); this.drawOverlay(); this.renderPanel(); } }, '全不選') : null,
+      h('button', { class: 'btn sm', disabled: !!job, onclick: () => Cloud.enqueuePeople(this.rec) }, '重新偵測')));
+    else box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', disabled: !!job, onclick: async () => { if (await Cloud.enqueuePeople(this.rec)) this.renderPanel(); } }, pj ? '☁ 偵測中…' : P.none ? '👥 AI 偵測多餘人物（雲端）' : '沒有偵測到人物・重新偵測')));
+    return box;
   },
   async sendFix(ops) {
     const P = this.fixP; const masks = {};
@@ -1196,6 +1287,9 @@ const Editor = {
   /* ---------- 工具互動 ---------- */
   toolDown(p) {
     const G = this.last.G; const tolS = 26 * this.dpr;
+    if (this.tool === 'aifix' && this.ppl && this.ppl.on && this.ppl.rec === this.rec.id) {
+      const i = this.pplHit(p); if (i >= 0) { this.ppl.sel.has(i) ? this.ppl.sel.delete(i) : this.ppl.sel.add(i); this.pplPill(); this.drawOverlay(); } return true;
+    }
     if (this.tool === 'aifix' && this.erasePaint) {
       const em = this.eraseMaskFor(); const st = { pts: [this.scrToSrc(p)], size: this.eraseSize || 0.03, feather: 0.1, flow: 1, erase: !!this.eraseRubber };
       em.p.strokes.push(st); this.drag = { kind: 'erase', st }; this.drawOverlay(); return true;

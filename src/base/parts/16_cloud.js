@@ -100,7 +100,7 @@ const Cloud = {
     for (const r of list) {
       const isRaw = !!r.rawLazy && !r.masterOri1; const b = await DB.get(isRaw ? 'raw' : 'files', r.id); if (!b) continue;
       if (!cur || cur.items.length >= 8 || size + b.size > 150e6) { cur = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), state: 'queued', model, items: [], t: Date.now() }; cur.branch = 'aiphoto-job-' + cur.id; this.jobs.push(cur); size = 0; }
-      cur.items.push({ id: r.id, name: r.name, raw: isRaw, chroma: (((r.edit || {}).ai || {}).chroma ?? 60) / 100, ori: (r.convFrom || r.masterOri1) ? 1 : (r.exif && r.exif.orientation) || 1, ext: isRaw ? ((/\.([a-z0-9]+)$/i.exec(r.name) || [, 'raw'])[1].toLowerCase()) : /png/.test(b.type) ? 'png' : /webp/.test(b.type) ? 'webp' : 'jpg' }); size += b.size;
+      cur.items.push({ id: r.id, name: r.name, raw: isRaw, rawK: r.rawK || 0, chroma: (((r.edit || {}).ai || {}).chroma ?? 60) / 100, ori: (r.convFrom || r.masterOri1) ? 1 : (r.exif && r.exif.orientation) || 1, ext: isRaw ? ((/\.([a-z0-9]+)$/i.exec(r.name) || [, 'raw'])[1].toLowerCase()) : /png/.test(b.type) ? 'png' : /webp/.test(b.type) ? 'webp' : 'jpg' }); size += b.size;
     }
     this.jobs = this.jobs.filter((j) => j.items.length); this.save();
     toast(`已加入雲端佇列：${list.length} 張相片，可切到背景或關閉螢幕`, 4000);
@@ -120,11 +120,20 @@ const Cloud = {
       const o = ops.filter((k) => k !== 'erase' || masks[r.id]);
       const ed = normEdit(r.edit || {}); const wantDn = !!(ed.ai.on && (r.cloudAi || CFG.cloud.dnWithFix !== false));
       if (masks[r.id]) await DB.put('ai', masks[r.id], 'mask:' + r.id);
-      cur.items.push({ id: r.id, name: r.name, raw: isRaw, fix: true, ops: wantDn ? [...o, 'dn'] : o, p, mask: !!masks[r.id], chroma: (ed.ai.chroma ?? 60) / 100,
+      cur.items.push({ id: r.id, name: r.name, raw: isRaw, rawK: r.rawK || 0, fix: true, ops: wantDn ? [...o, 'dn'] : o, p, mask: !!masks[r.id], chroma: (ed.ai.chroma ?? 60) / 100,
         ori: (r.convFrom || r.masterOri1) ? 1 : (r.exif && r.exif.orientation) || 1, ext: isRaw ? ((/\.([a-z0-9]+)$/i.exec(r.name) || [, 'raw'])[1].toLowerCase()) : /png/.test(b.type) ? 'png' : /webp/.test(b.type) ? 'webp' : 'jpg' });
     }
     this.jobs = this.jobs.filter((j) => j.items.length); this.save();
     toast(`☁ 已送出 ${list.length} 張：${ops.map((k) => this.OPS[k]).join('、')}`, 4000); this.run(); return true;
+  },
+  /* v1.16：AI 偵測多餘人物（雲端 YOLO 實例分割）＋ 預先用 LaMa 移除全部人物，回來後在手機上點選要消除哪些人（像 Lightroom） */
+  async enqueuePeople(r) {
+    if (!this.ready()) { toast('請先到「設定 → 雲端 AI 降噪」連接 GitHub', 4500); App.nav('set'); return false; }
+    if (this.active().some((j) => j.items.some((i) => i.id === r.id))) { toast('這張相片已在雲端處理中'); return false; }
+    const isRaw = !!r.rawLazy && !r.masterOri1; const b = await DB.get(isRaw ? 'raw' : 'files', r.id); if (!b) { toast('找不到原始檔'); return false; }
+    const cur = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), state: 'queued', model: this.cfg().model, kind: 'people', items: [], t: Date.now() }; cur.branch = 'aiphoto-job-' + cur.id;
+    cur.items.push({ id: r.id, name: r.name, raw: isRaw, rawK: r.rawK || 0, people: true, ori: (r.convFrom || r.masterOri1) ? 1 : (r.exif && r.exif.orientation) || 1, ext: isRaw ? ((/\.([a-z0-9]+)$/i.exec(r.name) || [, 'raw'])[1].toLowerCase()) : /png/.test(b.type) ? 'png' : /webp/.test(b.type) ? 'webp' : 'jpg' });
+    this.jobs.push(cur); this.save(); toast('☁ 已送出：AI 偵測人物（約 3–8 分鐘，完成後可點選要消除的人）', 4500); this.run(); return true;
   },
   /* AI 畫質增強（匯出後放大）：App 先照常算好最終成品，交給雲端放大 2 倍，回傳後補回 EXIF 存到相簿 */
   async enqueueSR(list, scale) {
@@ -146,11 +155,23 @@ const Cloud = {
       const it = j.items[k]; j.msg = `上傳 ${k + 1}/${j.items.length}`; this.save(); this.bg();
       const b = it.sr ? await DB.get('ai', 'srin:' + it.id) : await DB.get(it.raw ? 'raw' : 'files', it.id); if (!b) { it.err = '找不到原始檔'; continue; }
       it.file = `${it.id}.${it.ext}`;
-      const r = await this.api('/git/blobs', { method: 'POST', body: { content: await this.blobB64(b), encoding: 'base64' } });
-      tree.push({ path: 'in/' + it.file, mode: '100644', type: 'blob', sha: r.sha });
+      // v1.16：GitHub 單一檔案（blob）有大小上限，未壓縮 RAW 會出現 422「input too large」→ 切段上傳，雲端再組回
+      const PART = 8e6;   // GitHub 單次 API 請求太大會回 422「input too large」：大檔切成 8MB 一段
+      if (b.size > PART * 1.25) {
+        const n = Math.ceil(b.size / PART); it.parts = n;
+        for (let q = 0; q < n; q++) {
+          j.msg = `上傳 ${k + 1}/${j.items.length}（${q + 1}/${n} 段）`; this.save(); this.bg();
+          const r = await this.api('/git/blobs', { method: 'POST', body: { content: await this.blobB64(b.slice(q * PART, Math.min(b.size, (q + 1) * PART))), encoding: 'base64' } });
+          tree.push({ path: `in/${it.file}.part${q}`, mode: '100644', type: 'blob', sha: r.sha });
+        }
+      } else {
+        delete it.parts;
+        const r = await this.api('/git/blobs', { method: 'POST', body: { content: await this.blobB64(b), encoding: 'base64' } });
+        tree.push({ path: 'in/' + it.file, mode: '100644', type: 'blob', sha: r.sha });
+      }
       if (it.mask) { const mb = await DB.get('ai', 'mask:' + it.id); if (mb) { const mr = await this.api('/git/blobs', { method: 'POST', body: { content: await this.blobB64(mb), encoding: 'base64' } }); tree.push({ path: `in/${it.id}_mask.png`, mode: '100644', type: 'blob', sha: mr.sha }); } }
     }
-    const man = { app: 'AI修圖軟體', model: j.model, items: j.items.filter((i) => i.file).map(({ id, file, ori, name, raw, chroma, sr, scale, fix, ops, p }) => (sr ? { id, file, name, kind: 'sr', scale: scale || 2, dn: 0.7 } : fix ? { id, file, ori, name, raw: !!raw, kind: 'fix', ops, p, chroma: chroma ?? 0.6 } : { id, file, ori, name, raw: !!raw, chroma: chroma ?? 0.6 })) };
+    const man = { app: 'AI修圖軟體', model: j.model, items: j.items.filter((i) => i.file).map(({ id, file, ori, name, raw, chroma, sr, scale, fix, ops, p, parts, rawK, people }) => Object.assign(sr ? { id, file, name, kind: 'sr', scale: scale || 2, dn: 0.7 } : people ? { id, file, ori, name, raw: !!raw, kind: 'people' } : fix ? { id, file, ori, name, raw: !!raw, kind: 'fix', ops, p, chroma: chroma ?? 0.6 } : { id, file, ori, name, raw: !!raw, chroma: chroma ?? 0.6 }, parts ? { parts } : {}, raw && rawK ? { rawK } : {})) };
     if (!man.items.length) throw new Error('沒有可上傳的相片');
     const mb = await this.api('/git/blobs', { method: 'POST', body: { content: this.b64text(JSON.stringify(man)), encoding: 'base64' } });
     tree.push({ path: 'job.json', mode: '100644', type: 'blob', sha: mb.sha });
@@ -211,6 +232,15 @@ const Cloud = {
       j.msg = `下載 ${k + 1}/${j.items.length}`; this.save(); this.bg();
       const b = await this.api(`/git/blobs/${sha}`, { blob: true, accept: 'application/vnd.github.raw+json' });
       if (it.sr) { await this.saveSR(it, b, status[it.id] || {}); it.ok = true; continue; }
+      if (it.people) {
+        let ppl = []; if (files[`out/${it.id}_people.json`]) ppl = JSON.parse(await (await this.api(`/git/blobs/${files[`out/${it.id}_people.json`]}`, { blob: true, accept: 'application/vnd.github.raw+json' })).text());
+        await DB.put('ai', new Blob([b], { type: 'image/jpeg' }), 'pclean:' + it.id); await DB.put('ai', { list: ppl, t: Date.now() }, 'people:' + it.id);
+        const r = await DB.get('photos', it.id); if (r) { r.people = ppl.length; await DB.put('photos', r); const lr = Library.recs.find((x) => x.id === it.id); if (lr) lr.people = ppl.length; }
+        toast(ppl.length ? `👥 「${it.name}」偵測到 ${ppl.length} 位人物，到「AI 修復 → 移除多餘人物」點選要消除的人` : `「${it.name}」沒有偵測到人物`, 5000); this.noteAt = Date.now();
+        if (Editor.ppl && Editor.ppl.rec === it.id) Editor.ppl = null;
+        this.later(() => { if (Editor.active && Editor.rec && Editor.rec.id === it.id && Editor.tool === 'aifix') Editor.renderPanel(); });
+        it.ok = true; done.push(it.id); continue;
+      }
       if (it.fix) {
         let dn = null; if (files[`out/${it.id}_dn.jpg`]) dn = await this.api(`/git/blobs/${files[`out/${it.id}_dn.jpg`]}`, { blob: true, accept: 'application/vnd.github.raw+json' });
         await this.applyFix(it, new Blob([b], { type: 'image/jpeg' }), dn ? new Blob([dn], { type: 'image/jpeg' }) : null, status[it.id] || {}); it.ok = true; done.push(it.id); continue;
@@ -354,7 +384,7 @@ const Cloud = {
       const bad = this.jobs.filter((j) => j.state === 'error' && !j.notified);
       if (fin.length || bad.length) {
         const kinds = new Set([...fin, ...bad].map((j) => j.kind || 'dn'));
-        const ttl = kinds.size > 1 ? '雲端 AI 處理完成' : kinds.has('sr') ? '雲端 AI 畫質增強完成' : kinds.has('fix') ? '雲端 AI 修復完成' : '雲端 AI 降噪完成';
+        const ttl = kinds.size > 1 ? '雲端 AI 處理完成' : kinds.has('people') ? '雲端 AI 偵測人物完成' : kinds.has('sr') ? '雲端 AI 畫質增強完成' : kinds.has('fix') ? '雲端 AI 修復完成' : '雲端 AI 降噪完成';
         NAT.call('notifyDone', ttl, `${n} 張完成${bad.length ? `，${bad.length} 批失敗` : ''}，GitHub 暫存檔已移除`);
         const msg = `☁ ${ttl}：${n} 張${bad.length ? `（${bad.length} 批失敗）` : ''}`;
         if (Date.now() - (this.noteAt || 0) < 6000) setTimeout(() => toast(msg, 4000), 6200 - (Date.now() - this.noteAt)); else toast(msg, 4500);
@@ -379,7 +409,7 @@ const Cloud = {
   badge(r) {
     const st = this.state(r); if (!st) return null;
     const M = { wait: ['☁ 排隊', 'cw'], up: ['⇡ 上傳', 'cu'], run: ['雲端計算', 'cr'], down: ['⇣ 回傳', 'cd'], done: ['☁✓', 'cok'], err: ['☁✕', 'cer'] }[st];
-    if (st === 'run') { const j = this.active().find((x) => x.items.some((i) => i.id === r.id)); if (j && j.kind === 'fix') M[0] = 'AI 修復中'; else M[0] = '雲端降噪'; }
+    if (st === 'run') { const j = this.active().find((x) => x.items.some((i) => i.id === r.id)); if (j && j.kind === 'fix') M[0] = 'AI 修復中'; else if (j && j.kind === 'people') M[0] = '偵測人物'; else M[0] = '雲端降噪'; }
     return h('span', { class: 'cb ' + M[1], title: { wait: '排隊等待上傳', up: '正在上傳到 GitHub', run: '雲端降噪計算中', down: '正在回傳到手機', done: '已套用雲端降噪結果', err: '雲端處理失敗，點「雲端工作」查看' }[st] }, st === 'run' ? h('i', { class: 'spin' }) : null, M[0]);
   },
   /* 圖庫上方的雲端進度列 */
@@ -406,7 +436,7 @@ const Cloud = {
     for (const j of [...this.jobs].reverse()) {
       const act = this.active().includes(j);
       el.append(h('div', { class: 'mitem' }, h('span', { class: 'mi' }, act ? h('span', { class: 'spin' }) : j.state === 'done' ? '✓' : '!'),
-        h('span', { class: 'grow' }, `${j.items.length} 張・${j.kind === 'sr' ? 'AI 畫質增強 ' + (j.items[0].scale || 2) + '×' : j.kind === 'fix' ? (j.items[0].ops || []).filter((k) => k !== 'dn').map((k) => this.OPS[k]).join('＋') : (j.model === 'hq' ? '降噪 高品質' : '降噪 快速')}・${ST[j.state] || j.state}`,
+        h('span', { class: 'grow' }, `${j.items.length} 張・${j.kind === 'people' ? 'AI 偵測人物' : j.kind === 'sr' ? 'AI 畫質增強 ' + (j.items[0].scale || 2) + '×' : j.kind === 'fix' ? (j.items[0].ops || []).filter((k) => k !== 'dn').map((k) => this.OPS[k]).join('＋') : (j.model === 'hq' ? '降噪 高品質' : '降噪 快速')}・${ST[j.state] || j.state}`,
           h('div', { class: 'sub' }, (j.msg || '') + (j.err ? '：' + j.err : '') + '　' + new Date(j.t).toLocaleString('zh-TW')),
           h('div', { class: 'sub' }, j.items.map((i) => (i.ok ? '✓' : i.err ? '✗' : '') + i.name + (i.err ? `（${i.err}）` : '')).join('、')), j.log ? h('details', { class: 'jlog' }, h('summary', null, '查看雲端錯誤記錄'), h('pre', null, j.log), h('button', { class: 'btn sm', onclick: () => { try { navigator.clipboard.writeText(j.log); toast('已複製錯誤記錄'); } catch (e) {} } }, '複製')) : null),
         act ? h('button', { class: 'btn sm', onclick: () => this.cancel(j) }, '取消') : null));

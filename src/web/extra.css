@@ -50,3 +50,8 @@
 .cbHd>b{white-space:nowrap;flex:none}
 .cbHd .cvPre{flex:1 1 auto;min-width:0;max-width:none}
 .cvPre{padding:6px 10px;font-size:14px;font-weight:700;border-radius:999px;max-width:58vw;margin-left:8px;border:1px solid var(--edge);background:var(--paper2,rgba(255,255,255,.4));color:var(--ink)}
+/* v1.16 移除多餘人物：選取列 */
+#pplPill{position:absolute;z-index:7;left:50%;bottom:12px;transform:translateX(-50%);width:min(460px,calc(100% - 20px));border-radius:22px;padding:8px 10px;display:flex;gap:10px;align-items:center}
+#pplPill .grow{flex:1;min-width:0}#pplPill b{font-size:15px}#pplPill .sub{font-size:12px}
+#pplPill .ib{width:40px;height:40px;border-radius:50%;border:1px solid var(--edge);background:rgba(255,255,255,.3);font-size:18px;color:var(--ink);font-family:inherit}
+#pplPill .ib.ok{background:var(--ac);color:#fff;border:0}#pplPill .ib:disabled{opacity:.4}
