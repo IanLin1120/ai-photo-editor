@@ -1,0 +1,30 @@
+name: bench
+on:
+  push:
+    branches: [bench-oc]
+permissions:
+  contents: write
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          df -h / > disk.txt
+          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -q diffusers transformers accelerate safetensors huggingface_hub gradio_client opencv-python-headless scipy
+      - name: omni
+        continue-on-error: true
+        run: timeout 900 python3 bench.py omni
+      - name: oc
+        continue-on-error: true
+        run: timeout 3600 python3 bench.py oc
+      - name: push
+        if: always()
+        run: |
+          cp disk.txt out/ || true
+          pip list 2>/dev/null | grep -i -E "diffusers|transformers|torch|gradio" > out/pip.txt || true
+          git config user.name bench; git config user.email bench@users.noreply.github.com
+          git checkout -q --orphan bench-oc-out; git rm -rq --cached . ; git add out; git commit -qm out; git push -qf origin HEAD:bench-oc-out
