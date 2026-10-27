@@ -11,7 +11,17 @@ img = Image.open('scene.jpg').convert('RGB'); mask = Image.open('mask.png').conv
 if 'omni' in sys.argv:
     try:
         from gradio_client import Client, handle_file
-        t = time.time(); c = Client('iosca/Omnieraser'); log['omni_api'] = str(c.view_api(return_format='dict'))[:3000]
+        from huggingface_hub import HfApi
+        api = HfApi(); sp = []
+        for q in ['omnieraser', 'OmniEraser', 'objectclear']:
+            for x in api.list_spaces(search=q, limit=40):
+                try: rt = api.get_space_runtime(x.id); sp.append((x.id, rt.stage, str(rt.hardware)))
+                except Exception as e: sp.append((x.id, 'ERR', str(e)[:60]))
+        log['spaces'] = sp; save()
+        ok = [i for i, st, hw in sp if st == 'RUNNING' and 'omni' in i.lower()]
+        log['omni_try'] = ok
+        if not ok: raise RuntimeError('no running omnieraser space')
+        t = time.time(); c = Client(ok[0]); log['omni_api'] = str(c.view_api(return_format='dict'))[:3000]
         r = c.predict(handle_file('scene.jpg'), handle_file('mask.png'), 28, 1234, 3.5, 'There is nothing here.', api_name='/infer')
         log['omni_t'] = time.time() - t; log['omni_r'] = str(r)[:2000]
         p = r[0][0]['image'] if isinstance(r, (list, tuple)) and isinstance(r[0], list) else None
@@ -30,9 +40,9 @@ if 'oc' in sys.argv:
         t = time.time()
         pipe = ObjectClearPipeline.from_pretrained_with_custom_modules('jixin0101/ObjectClear', torch_dtype=torch.float32, variant='fp16', apply_attention_guided_fusion=True)
         log['oc_load'] = time.time() - t; save()
-        W, H = img.size; s = 512 / min(W, H); w, h = int(W * s) // 8 * 8, int(H * s) // 8 * 8
+        W, H = img.size; s = 512 / min(W, H); w, h = max(64, round(W * s / 64) * 64), max(64, round(H * s / 64) * 64)
         im = img.resize((w, h), Image.BICUBIC); mk = mask.resize((w, h), Image.NEAREST).convert('RGB')
-        for steps, gs in [(20, 2.5), (10, 2.5)]:
+        for steps, gs in [(12, 2.5), (20, 2.5)]:
             t = time.time()
             r = pipe(prompt='remove the instance of object', image=im, mask_image=mk, generator=torch.Generator().manual_seed(300000), num_inference_steps=steps, guidance_scale=gs, height=h, width=w)
             log[f'oc_{steps}'] = time.time() - t; r.images[0].save(f'out/oc_{steps}.jpg', quality=92); save()
