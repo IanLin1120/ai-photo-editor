@@ -4,7 +4,7 @@ from PIL import Image
 log = {'nproc': os.cpu_count()}
 try: log['mem'] = open('/proc/meminfo').read().split('\n')[0]
 except Exception: pass
-def save(): json.dump(log, open('out/log.json', 'w'), indent=1, ensure_ascii=False)
+def save(): json.dump(log, open('out/log_' + sys.argv[1] + '.json', 'w'), indent=1, ensure_ascii=False)
 os.makedirs('out', exist_ok=True)
 img = Image.open('scene.jpg').convert('RGB'); mask = Image.open('mask.png').convert('L').resize(img.size)
 # ---------- OmniEraser（Hugging Face Space，免費 GPU）----------

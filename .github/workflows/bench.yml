@@ -13,7 +13,7 @@ jobs:
       - name: install
         run: |
           df -h / > disk.txt
-          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -q diffusers transformers accelerate safetensors huggingface_hub gradio_client opencv-python-headless scipy
       - name: omni
         continue-on-error: true
