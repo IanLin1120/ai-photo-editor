@@ -166,11 +166,16 @@ public class Geo {
                 List<ResolveInfo> L = a.getPackageManager().queryIntentActivities(it, 0);
                 String[] pref = (pkgPref == null || pkgPref.isEmpty() ? "com.coloros.gallery3d,com.oplus.gallery,com.oneplus.gallery,com.oppo.gallery3d" : pkgPref).split(",");
                 for (String p : pref) for (ResolveInfo r : L) if (r.activityInfo != null && p.equals(r.activityInfo.packageName)) { if (used.isEmpty()) { it.setClassName(r.activityInfo.packageName, r.activityInfo.name); used = p; } }
-                JSONObject o = new JSONObject(); o.put("ok", true); o.put("pkg", used); org.json.JSONArray arr = new org.json.JSONArray(); for (ResolveInfo r : L) if (r.activityInfo != null) arr.put(r.activityInfo.packageName); o.put("apps", arr);
+                JSONObject o = new JSONObject(); o.put("ok", true); o.put("pkg", used); o.put("src", src.toString()); o.put("t0", editT0); o.put("mod", editMod); org.json.JSONArray arr = new org.json.JSONArray(); for (ResolveInfo r : L) if (r.activityInfo != null) arr.put(r.activityInfo.packageName); o.put("apps", arr);
                 final boolean direct = !used.isEmpty();
                 a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(direct ? it : Intent.createChooser(it, "用哪個 App 編輯")); } catch (Throwable t) { a.js("window.toast&&toast('找不到可以編輯相片的 App')"); } } });
                 return o.toString();
             } catch (Throwable t) { return "{\"ok\":false,\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
+        }
+        /* v1.18.1：App 在背景被系統關掉再開時，原本記在記憶體裡的資料會不見 → 由網頁把記錄傳回來 */
+        @JavascriptInterface public String editResult2(String src, double t0, double mod) {
+            try { if (src != null && !src.isEmpty()) editSrc = Uri.parse(src); if (t0 > 0) editT0 = (long) t0; if (mod != 0) editMod = (long) mod; } catch (Throwable t) { }
+            return editResult();
         }
         /* 找編輯結果：① 編輯期間新增的相片（另存新檔）② 原檔被覆寫 */
         @JavascriptInterface public String editResult() {
@@ -178,7 +183,7 @@ public class Geo {
             try {
                 JSONObject o = new JSONObject(); long srcId = -1; try { srcId = ContentUris.parseId(editSrc); } catch (Throwable t) { }
                 Uri base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI; Uri hit = null; String name = "";
-                Cursor c = a.getContentResolver().query(base, new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME }, MediaStore.Images.Media.DATE_ADDED + ">=?", new String[] { String.valueOf(editT0) }, MediaStore.Images.Media.DATE_ADDED + " DESC");
+                Cursor c = a.getContentResolver().query(base, new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME }, "(" + MediaStore.Images.Media.DATE_ADDED + ">=? OR " + MediaStore.Images.Media.DATE_MODIFIED + ">=?)", new String[] { String.valueOf(editT0), String.valueOf(editT0) }, MediaStore.Images.Media.DATE_MODIFIED + " DESC");
                 if (c != null) { try { while (c.moveToNext()) { long id = c.getLong(0); if (id == srcId) continue; hit = ContentUris.withAppendedId(base, id); name = c.getString(1); break; } } finally { c.close(); } }
                 String state = "none";
                 if (hit != null) state = "new"; else if (modified(a, editSrc) > editMod) { hit = editSrc; state = "same"; }

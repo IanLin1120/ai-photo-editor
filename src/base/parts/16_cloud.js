@@ -278,7 +278,7 @@ const Cloud = {
     DB.del('ai', 'mask:' + id).catch(() => {});
     await DB.put('photos', r);
     const lr = Library.recs.find((x) => x.id === id); if (lr) Object.assign(lr, r);
-    const notes = []; if (st.relight) notes.push('人像補光：' + st.relight); if (st.beauty) notes.push('人像美顏：' + st.beauty); if (st.erase) notes.push('AI 消除：' + st.erase);
+    const notes = []; if (st.relight) notes.push('人像補光：' + st.relight); if (st.beauty) notes.push('人像美顏：' + st.beauty); if (st.erase) notes.push('AI 消除：' + st.erase); if (st.ext) notes.push(st.ext);
     if (st.rescue) { const q = st.rescue, f = []; if (q.haze >= 0.15) f.push('霧霾'); if (q.backlight >= 0.15) f.push('逆光／前景過暗'); else if (q.hdr >= 0.3) f.push('光比過高'); if (q.under >= 0.3 && !f.length) f.push('曝光不足'); notes.push('救援廢片：' + (f.length ? '偵測到' + f.join('、') + '，已自動修復' : '未發現明顯問題，已做輕度優化') + (q.nr ? '（暗部已 AI 降噪）' : '') + (q.faces ? `，人臉補光 ${q.faces} 張` : '')); }
     if (notes.length) { toast(`「${r.name}」${notes.join('；')}`, 6000); this.noteAt = Date.now(); }
     this.later(() => this.syncEditor(id, r));
@@ -299,8 +299,9 @@ const Cloud = {
     await DB.del('files', id + ':orig').catch(() => {}); await DB.del('thumbs', 'e:' + id).catch(() => {});
     for (const k of ['fast', 'hq']) { DB.del('ai', `full:${id}:${k}`).catch(() => {}); for (const L of [1024, 1536, 2048, 2560, 3072]) DB.del('ai', `${id}:${k}:${L}`).catch(() => {}); }
     await DB.del('ai', 'cloud:' + id).catch(() => {}); delete r.cloudAi; r.restoredAt = Date.now();
+    if (r.extPrevEdit) { r.edit = r.extPrevEdit; delete r.extPrevEdit; if (Editor.active && Editor.rec && Editor.rec.id === id) Editor.edit = normEdit(r.edit); }
     r.masterOri1 = o.masterOri1; r.w = o.w; r.h = o.h; delete r.fixOrig; delete r.fixed; delete r.fixAt;
-    await DB.put('photos', r); const lr = Library.recs.find((x) => x.id === id); if (lr) { Object.assign(lr, r); delete lr.fixOrig; delete lr.fixed; delete lr.cloudAi; if (!r.masterOri1) delete lr.masterOri1; }
+    await DB.put('photos', r); const lr = Library.recs.find((x) => x.id === id); if (lr) { Object.assign(lr, r); delete lr.fixOrig; delete lr.fixed; delete lr.cloudAi; if (!r.extPrevEdit) delete lr.extPrevEdit; if (!r.masterOri1) delete lr.masterOri1; }
     await this.syncEditor(id, r);
   },
   async saveSR(it, blob, st) {

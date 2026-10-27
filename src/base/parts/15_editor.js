@@ -1051,35 +1051,79 @@ const Editor = {
   /* ---------- v1.18：用手機內建相簿編輯（例如 OPPO「AI 圖像助理」），取回結果、名稱不變 ---------- */
   async extEdit() {
     if (!(isApp && window.AIP2 && AIP2.editLast)) { toast('這個功能需要安裝 v1.18 以上的 APK', 4000); return; }
-    const id = this.rec.id; this.busy('準備相片…', true);
+    const id = this.rec.id; this.busy('套用目前的調色、降噪後輸出…', true);
     try {
       await this.persist();
-      const full = await this.ses.ensureFull(); const c = mkCanvas(full.width, full.height); c.getContext('2d').drawImage(full, 0, 0);
-      const blob = await canvasBlob(c, 'image/jpeg', 0.97); c.width = c.height = 1;
+      // v1.18.1：手機相簿只能編輯 JPG → 先把目前所有調整（調色、降噪、裁切…）套用進去再送出，回來後這些調整歸零（已經在照片裡了）
+      const edit = await refreshLens(this.rec, normEdit(this.edit));
+      const r0 = await this.ses.exportPixels(edit, { long: 0, alpha: false, stage: (t) => this.busy(t, true) });
+      const bytes = await Exporter.encode(r0.data, r0.W, r0.H, 'jpeg', 96);
+      await DB.put('ai', new Blob([bytes], { type: 'image/jpeg' }), 'extSent:' + id);
       const base = (this.rec.name || 'photo').replace(/\.[^.]+$/, '');
-      await Exporter.save(`${base}_手機相簿編輯中.jpg`, 'image/jpeg', new Uint8Array(await blob.arrayBuffer()));
+      await Exporter.save(`${base}_手機相簿編輯中.jpg`, 'image/jpeg', bytes);
       const r = JSON.parse(AIP2.editLast('') || '{}'); if (!r.ok) throw new Error(r.err || '無法開啟');
-      this.extPend = { id, t: Date.now(), pkg: r.pkg }; lsSet('aip.extPend', this.extPend);
+      this.extPend = { id, t: Date.now(), src: r.src || '', t0: r.t0 || 0, mod: r.mod || 0, W: r0.W, H: r0.H }; lsSet('aip.extPend', this.extPend);
       this.busy(null);
-      toast(r.pkg ? '已開啟手機相簿：點「AI 圖像助理」使用 AI 消除等功能，完成後按「完成／儲存」，再回到這個 App' : '請選擇用手機相簿編輯；完成後儲存並回到這個 App', 7000);
-    } catch (e) { this.busy(null); toast('無法開啟手機相簿編輯：' + e.message, 5000); }
+      toast(r.pkg ? '已開啟手機相簿：可用「AI 圖像助理」裡的 AI 消除等功能，用完儲存（另存或覆蓋都可以），回到這個 App 就會自動取回' : '請選擇用手機相簿編輯；完成後儲存並回到這個 App', 7000);
+    } catch (e) { this.busy(null); console.error(e); toast('無法開啟手機相簿編輯：' + e.message, 5000); }
   },
+  /* 回到 App 時自動找編輯結果（相簿存檔可能慢幾秒，會重試幾次） */
   async extBack(force) {
-    const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult)) return;
-    if (!force && Date.now() - P.t < 3000) return;
-    const r = JSON.parse(AIP2.editResult() || '{}');
-    if (r.state !== 'new' && r.state !== 'same') {
-      Upd.dialog('沒有找到編輯後的相片', '如果還在手機相簿裡編輯，完成並儲存後再回來；或按「再檢查一次」。', [['再檢查一次', () => this.extBack(true)], ['放棄', () => { this.extPend = null; lsSet('aip.extPend', null); try { AIP2.editCleanup(); } catch (e) {} }], ['稍後', null]]);
-      return;
-    }
-    this.extPend = null; lsSet('aip.extPend', null);
+    const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult) || this.extBusy) return;
+    if (!force && Date.now() - P.t < 2500) return;
+    this.extBusy = true;
     try {
+      let r = {};
+      for (let k = 0; k < 6; k++) {
+        r = JSON.parse((AIP2.editResult2 ? AIP2.editResult2(P.src || '', P.t0 || 0, P.mod || 0) : AIP2.editResult()) || '{}');
+        if (r.state === 'new' || r.state === 'same') break; await sleep(2000);
+      }
+      if (r.state !== 'new' && r.state !== 'same') {
+        Upd.dialog('還沒有找到編輯後的相片', '如果還在手機相簿裡編輯，完成並儲存後再回來就會自動取回；也可以按「再檢查一次」。' + (r.err ? '<br><small>' + Upd.esc(r.err) + '</small>' : ''), [['再檢查一次', () => this.extBack(true)], ['不要了', () => { this.extPend = null; lsSet('aip.extPend', null); try { AIP2.editCleanup(); } catch (e) {} }], ['稍後', null]]);
+        return;
+      }
+      this.extPend = null; lsSet('aip.extPend', null);
+      this.busy('取回手機相簿的編輯結果…', true);
       const b = await (await fetch(`https://aiphoto.app/pick/${r.key}`)).blob(); if (!b.size) throw new Error('讀不到檔案');
       const rec = await DB.get('photos', P.id); if (!rec) throw new Error('找不到原本的相片');
-      await Cloud.applyFix({ id: P.id, ops: ['erase'] }, b, null, { done: ['erase'], erase: '已套用手機相簿的編輯（名稱維持「' + rec.name + '」）' });
+      const sent = await DB.get('ai', 'extSent:' + P.id).catch(() => null);
+      const out = sent ? await this.extMerge(sent, b) : { blob: b, note: '' };
+      // 調整已經套用在送出的照片裡 → 歸零（舊的調整保留，按「還原原圖」時一起恢復）
+      rec.extPrevEdit = rec.edit; rec.edit = normEdit({}); await DB.put('photos', rec);
+      const lr = Library.recs.find((x) => x.id === P.id); if (lr) { lr.edit = rec.edit; lr.extPrevEdit = rec.extPrevEdit; }
+      if (this.active && this.rec && this.rec.id === P.id) { this.edit = normEdit({}); this.rec.edit = this.edit; this.rec.extPrevEdit = rec.extPrevEdit; }
+      await Cloud.applyFix({ id: P.id, ops: ['erase'] }, out.blob, null, { done: ['erase'], ext: '已套用手機相簿的編輯（名稱維持「' + rec.name + '」）' + out.note });
+      DB.del('ai', 'extSent:' + P.id).catch(() => {});
       try { AIP2.editCleanup(); } catch (e) {}
+      this.busy(null);
       if (r.state === 'new') toast('手機相簿另外存了一張「' + (r.name || '新相片') + '」，不需要的話可以到相簿刪除', 6000);
-    } catch (e) { toast('取回編輯結果失敗：' + e.message, 5000); }
+    } catch (e) { this.busy(null); console.error(e); toast('取回編輯結果失敗：' + e.message, 5000); }
+    finally { this.extBusy = false; }
+  },
+  /* 手機相簿的 AI 消除會把照片縮小（例如 2400 萬像素 → 1100 萬）：只把「有被改到的地方」換成相簿的結果，其他地方保留原本的高解析度；
+     如果整張都被改了（例如用了濾鏡、AI 調色），就直接用相簿的結果 */
+  async extMerge(sentBlob, newBlob) {
+    const S = await createImageBitmap(sentBlob), B = await createImageBitmap(newBlob);
+    try {
+      const W = S.width, H = S.height, sameRatio = Math.abs(B.width / B.height - W / H) < 0.01;
+      if (!sameRatio) return { blob: newBlob, note: '' };
+      const g = 512 / Math.max(W, H), gw = Math.round(W * g), gh = Math.round(H * g);
+      const px = (bm) => { const c = mkCanvas(gw, gh), x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.drawImage(bm, 0, 0, gw, gh); return x.getImageData(0, 0, gw, gh).data; };
+      const a = px(S), b = px(B), N = gw * gh, M = new Uint8Array(N); let n = 0;
+      for (let i = 0; i < N; i++) { const d = Math.abs(a[i * 4] - b[i * 4]) + Math.abs(a[i * 4 + 1] - b[i * 4 + 1]) + Math.abs(a[i * 4 + 2] - b[i * 4 + 2]); if (d > 36) { M[i] = 1; n++; } }
+      const f = n / N;
+      if (f > 0.35 || n === 0) return { blob: newBlob, note: f > 0.35 ? '' : '' };
+      // 遮罩：外擴＋羽化後放大到原尺寸
+      const mc = mkCanvas(gw, gh), mx = mc.getContext('2d'), md = mx.createImageData(gw, gh);
+      for (let i = 0; i < N; i++) { const v = M[i] ? 255 : 0; md.data[i * 4] = md.data[i * 4 + 1] = md.data[i * 4 + 2] = 255; md.data[i * 4 + 3] = v; }
+      mx.putImageData(md, 0, 0);
+      const big = mkCanvas(W, H), bx = big.getContext('2d'); bx.filter = `blur(${Math.max(2, Math.round(W / gw * 2.5))}px)`;
+      for (let k = 0; k < 3; k++) bx.drawImage(mc, 0, 0, W, H);   // 疊三次 ≈ 外擴
+      bx.filter = 'none'; bx.globalCompositeOperation = 'source-in'; bx.imageSmoothingQuality = 'high'; bx.drawImage(B, 0, 0, W, H);
+      const o = mkCanvas(W, H), ox = o.getContext('2d'); ox.drawImage(S, 0, 0); ox.drawImage(big, 0, 0); big.width = big.height = 1;
+      const blob = await canvasBlob(o, 'image/jpeg', 0.96); o.width = o.height = 1;
+      return { blob, note: `；只替換被修改的區域（約 ${Math.max(1, Math.round(f * 100))}%），其餘保留原本 ${W}×${H} 的解析度` };
+    } finally { S.close(); B.close(); }
   },
   async detectPeople(opt = {}) {
     if (this.pplBusy || !this.ses) return; const id = this.rec.id;
