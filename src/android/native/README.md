@@ -12,3 +12,5 @@ v1.14.0：`Geo.java` 加入 App 內更新：`AIP2.installApk(url)` 下載 APK �
 v1.17.0：`MainActivity.onDestroy()` 開頭加入 `Geo.onDestroy(this)`：App 從最近使用中被滑掉（不是旋轉螢幕）時通知網頁 `onNativeEvent('closed')`，取消進行中的匯出。
 
 v1.18.0：`AIP2.editLast()`／`editResult()`／`editCleanup()`：把剛存的暫存 JPEG 用手機內建相簿（優先 OPPO／ColorOS 相簿）的編輯器開啟，回到 App 後找出編輯結果（另存的新相片或覆寫的原檔）交給網頁取回。Manifest 加入 `<queries>`（ACTION_EDIT image/*）。
+
+v1.19.2：`AIP2.openWith(uri, pkg, mode)`（分享或編輯到指定 App，例如 Lightroom）、`hasApp(pkg)`、`editResult3`；原始檔（非 App 暫存）絕不刪除。Manifest `<queries>` 加入 SEND image/* 與 com.adobe.lrmobile。

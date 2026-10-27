@@ -38,7 +38,7 @@ public class Geo {
     static final int REQ_LOC = 77;
     static final String[] PERMS = { "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION" };
     static MainActivity act;
-    static Uri editSrc; static long editT0, editMod;
+    static Uri editSrc; static long editT0, editMod; static boolean editTemp = true;
     static long modified(MainActivity a, Uri u) {
         try { Cursor c = a.getContentResolver().query(u, new String[] { MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.SIZE }, null, null, null); if (c == null) return 0; try { return c.moveToFirst() ? c.getLong(0) * 1000003L + c.getLong(1) : 0; } finally { c.close(); } } catch (Throwable t) { return 0; }
     }
@@ -158,7 +158,7 @@ public class Geo {
             final MainActivity a = act; if (a == null) return "{\"ok\":false,\"err\":\"no activity\"}";
             Uri u = null; synchronized (MainActivity.lastSaved) { if (!MainActivity.lastSaved.isEmpty()) u = MainActivity.lastSaved.get(MainActivity.lastSaved.size() - 1); }
             if (u == null) return "{\"ok\":false,\"err\":\"沒有暫存檔\"}";
-            final Uri src = u; editSrc = src; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, src);
+            final Uri src = u; editSrc = src; editTemp = true; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, src);
             final Intent it = new Intent(Intent.ACTION_EDIT); it.setDataAndType(src, "image/jpeg");
             it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             String used = "";
@@ -172,7 +172,29 @@ public class Geo {
                 return o.toString();
             } catch (Throwable t) { return "{\"ok\":false,\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
         }
+        /* v1.19.2：用指定的 App 開啟（例如 Lightroom：把原始 RAW 分享過去修圖，存回相簿後由 App 取回）
+           mode = "send"（分享／匯入）或 "edit"（編輯）；uri 空白＝剛存好的暫存 JPG */
+        @JavascriptInterface public String openWith(final String uriStr, final String pkg, final String mode) {
+            final MainActivity a = act; if (a == null) return "{\"ok\":false,\"err\":\"no activity\"}";
+            try {
+                Uri u = null; boolean temp = uriStr == null || uriStr.isEmpty();
+                if (temp) { synchronized (MainActivity.lastSaved) { if (!MainActivity.lastSaved.isEmpty()) u = MainActivity.lastSaved.get(MainActivity.lastSaved.size() - 1); } } else u = Uri.parse(uriStr);
+                if (u == null) return "{\"ok\":false,\"err\":\"沒有檔案\"}";
+                String mime = null; try { mime = a.getContentResolver().getType(u); } catch (Throwable t) { }
+                if (mime == null) mime = "image/*";
+                final Intent it;
+                if ("send".equals(mode)) { it = new Intent(Intent.ACTION_SEND); it.setType(mime); it.putExtra(Intent.EXTRA_STREAM, u); it.setClipData(android.content.ClipData.newRawUri("", u)); }
+                else { it = new Intent(Intent.ACTION_EDIT); it.setDataAndType(u, mime); }
+                it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | ("send".equals(mode) ? 0 : Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
+                if (pkg != null && !pkg.isEmpty()) { it.setPackage(pkg); if (it.resolveActivity(a.getPackageManager()) == null) return "{\"ok\":false,\"err\":\"notInstalled\"}"; }
+                editSrc = u; editTemp = temp; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, u);
+                a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(it); } catch (Throwable t) { a.js("window.toast&&toast('無法開啟該 App')"); } } });
+                JSONObject o = new JSONObject(); o.put("ok", true); o.put("src", u.toString()); o.put("t0", editT0); o.put("mod", editMod); o.put("mime", mime); return o.toString();
+            } catch (Throwable t) { return "{\"ok\":false,\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
+        }
+        @JavascriptInterface public boolean hasApp(String pkg) { try { return act != null && act.getPackageManager().getLaunchIntentForPackage(pkg) != null; } catch (Throwable t) { return false; } }
         /* v1.18.1：App 在背景被系統關掉再開時，原本記在記憶體裡的資料會不見 → 由網頁把記錄傳回來 */
+        @JavascriptInterface public String editResult3(String src, double t0, double mod, boolean temp) { editTemp = temp; return editResult2(src, t0, mod); }
         @JavascriptInterface public String editResult2(String src, double t0, double mod) {
             try { if (src != null && !src.isEmpty()) editSrc = Uri.parse(src); if (t0 > 0) editT0 = (long) t0; if (mod != 0) editMod = (long) mod; } catch (Throwable t) { }
             return editResult();
@@ -195,6 +217,7 @@ public class Geo {
         /* 刪掉 App 自己建立的暫存檔（不會刪到相簿裡別的相片） */
         @JavascriptInterface public boolean editCleanup() {
             final MainActivity a = act; if (a == null || editSrc == null) return false;
+            if (!editTemp) { editSrc = null; return false; }   // 不是 App 自己建立的暫存檔（例如原始 RAW）：絕對不刪
             try { a.getContentResolver().delete(editSrc, null, null); editSrc = null; return true; } catch (Throwable t) { return false; }
         }
         @JavascriptInterface public boolean has() { return act != null && Geo.has(act); }

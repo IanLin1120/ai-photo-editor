@@ -28,6 +28,11 @@
             <action android:name="android.intent.action.EDIT"/>
             <data android:mimeType="image/*"/>
         </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND"/>
+            <data android:mimeType="image/*"/>
+        </intent>
+        <package android:name="com.adobe.lrmobile"/>
     </queries>
     <application
         android:theme="@style/AppTheme"

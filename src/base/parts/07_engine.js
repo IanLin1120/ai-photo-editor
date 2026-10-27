@@ -44,6 +44,11 @@ vec2 outToSrc(vec2 pn){
 }
 vec2 PN(){return (uOutOrigin+gl_FragCoord.xy)/uOutSize;}
 vec2 TC(){return gl_FragCoord.xy/uWork;}
+
+/* v1.19.2：不會超出色域的飽和度：越接近色域邊緣增加得越少（不會把某個色版推到 0 以下變成黑點／色塊） */
+vec3 satK(vec3 p,float k){float g=dot(p,LUMA);if(k<=1.0)return g+(p-g)*max(k,0.0);
+  float km=1.0e3;for(int i=0;i<3;i++){float d=p[i]-g;if(d<-1.0e-4)km=min(km,g/(-d));else if(d>1.0e-4)km=min(km,(1.0-g)/d);}
+  km=max(km,1.0);float e=k-1.0,m=max(km-1.0,1.0e-3);return g+(p-g)*(1.0+m*(1.0-exp(-e/m)));}
 `;
 
   const FS_DEVELOP = HEAD + `
@@ -154,7 +159,7 @@ void main(){
     else{lin=mix(lin,uAtm,-uFx.z*0.55*(0.6+0.4*clamp(dk/Am,0.0,1.0)));}}
   float Y=max(dot(lin,LUMA),1.0e-6);float L=l2s1(Y);float Lb=G.g,Lc=G.r;float Lm=mix(L,Lb,0.72);
   float Lpre=l2s1(dot(B.rgb,LUMA));
-  float hl=uTone.y,sh=uTone.z;
+  float hl=uTone.y,sh=uTone.z;float gHiC=0.0;
   /* 亮部／陰影（v1.12，與 Lightroom 相同的局部方式）：在「邊緣保留的底層亮度」上計算調整量，再以線性增益乘回像素，
      局部對比與色彩比例都保留 → 陰影拉亮不發灰發虛、亮部壓暗不偏色；邊緣處改用像素本身亮度，避免光暈 */
   if(hl!=0.0||sh!=0.0){
@@ -163,6 +168,8 @@ void main(){
     b2+=sh*0.23*(1.0-smoothstep(0.03,0.52,bb))*(sh>0.0?(1.0-bb)*0.85+0.04:bb);
     float g=s2l1(max(b2,0.0))/max(s2l1(bb),1.0e-5);g=clamp(g,0.03,24.0);
     L=l2s1(Y*g);
+    /* v1.19.2：亮部往下拉時，像 Lightroom 一樣同時找回亮部裡的細節（雲的層次）與色彩，不會變成一片灰 */
+    if(hl<0.0){float wq=smoothstep(0.42,0.9,bb);L+=-hl*0.6*(Lpre-Lb)*wq;gHiC=-hl*0.45*wq;}
   }
   L+=uTone.w*0.22*smoothstep(0.35,1.0,L);
   L+=uBlacks*0.18*(1.0-smoothstep(0.0,0.45,L));
@@ -173,6 +180,7 @@ void main(){
   /* 曝光加亮時，高光柔和收邊（Lightroom 的曝光在色調曲線之前，亮部不會一下子衝白） */
   if(uRoll>0.0&&L>0.8){float r0=0.8+0.2*(1.0-exp(-(L-0.8)/0.2));L=mix(L,r0,uRoll);}
   float Yn=s2l1(max(L,0.0));vec3 l2=lin*(Yn/Y);
+  if(gHiC>0.0){l2=max(Yn+(l2-Yn)*(1.0+gHiC),vec3(0.0));}
   /* 氛圍光（v1.13）：用模糊過的亮度決定「光」與「暗」的範圍，以相乘方式改變光線顏色並加上柔和光暈，
      權重平滑（不看單一像素），所以不會產生色塊，也不會把雜訊放大成彩噪 */
   if(uAtmA>0.0){
@@ -210,7 +218,7 @@ void main(){
   /* 自然飽和度/飽和度 */
   if(uMono==0){float g=dot(p,LUMA);float mx2=max(p.r,max(p.g,p.b)),mn2=min(p.r,min(p.g,p.b));float s=clamp(mx2-mn2,0.0,1.0);
     float hu=rgb2hsv(clamp(p,0.0,1.0)).x;float skin=1.0-smoothstep(0.03,0.09,abs(hu-0.07));
-    float v=uVib*(1.0-s)*(uVib>0.0?(1.0-0.55*skin):1.0);p=g+(p-g)*max(0.0,1.0+uSat+v);}
+    float v=uVib*(1.0-s)*(uVib>0.0?(1.0-0.55*skin):1.0);p=satK(p,1.0+uSat+v);}
   /* 褪色 */
   if(uFx.w!=0.0)p=p*(1.0-uFx.w*0.12)+uFx.w*0.08;
   /* 移除色差（紫邊/綠邊） */
@@ -262,14 +270,15 @@ void main(){
   float Y=max(dot(lin,LUMA),1e-6);float L=l2s1(Y);float Lb=G.g,Lc=G.r;float Lm=mix(L,Lb,0.7);
   float hl=uMA1.z*w,sh=uMA1.w*w;
   L+=hl*0.32*smoothstep(0.45,0.97,Lm)*(hl<0.0?L:(1.05-L));
+  float mHiC=0.0;if(hl<0.0){float Lp0=l2s1(max(dot(texture(uB,tc).rgb,LUMA),1e-6));float wq=smoothstep(0.42,0.9,Lb);L+=-hl*0.6*(Lp0-Lb)*wq;mHiC=-hl*0.45*wq;}
   L+=sh*0.40*(1.0-smoothstep(0.03,0.55,Lm))*(sh>0.0?(1.0-L)*0.9+0.05:L);
   L+=uMA3.w*w*0.22*smoothstep(0.35,1.0,L);
   float Lk=clamp(L,0.0,1.0);L+=uMA1.y*w*0.45*(L-0.46)*4.0*Lk*(1.0-Lk);
   float Lpre=l2s1(dot(texture(uB,tc).rgb,LUMA));float midw=1.0-pow(abs(2.0*clamp(L,0.0,1.0)-1.0),2.0);
   L+=uMA2.w*w*0.6*(Lpre-Lc)*midw;
   if(uHasT==1){vec2 tb=texture(uT,tc).rg;L+=uMA3.y*w*1.6*(Lpre-tb.g);L+=uMA3.z*w*1.0*(Lpre-tb.r);}
-  float Yn=s2l1(max(L,0.0));lin*=Yn/Y;vec3 p=l2s(lin);
-  float g=dot(p,LUMA);p=g+(p-g)*max(0.0,1.0+uMA2.z*w);
+  float Yn=s2l1(max(L,0.0));lin*=Yn/Y;if(mHiC>0.0)lin=max(Yn+(lin-Yn)*(1.0+mHiC),vec3(0.0));vec3 p=l2s(lin);
+  p=satK(p,1.0+uMA2.z*w);
   o=vec4(p,C.a);
 }`;
 

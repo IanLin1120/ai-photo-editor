@@ -164,7 +164,7 @@ const DEF_EDIT = {
   sharp: { amt: 0, rad: 1.0, det: 25, mask: 0 },
   nr: { lum: 0, ldet: 50, lcon: 0, col: 0, cdet: 50, csm: 50 },
   ai: { on: false, amt: 60, model: 'fast', chroma: 60 },
-  optics: { ca: false, purple: 0, green: 0, dist: 0, vigCorr: 0, prof: { on: false, key: '', name: '', d: 100, v: 100, tca: true, p: null, camCrop: 0 } },
+  optics: { ca: true, purple: 100, green: 100, dist: 0, vigCorr: 0, prof: { on: false, key: '', name: '', d: 100, v: 100, tca: true, p: null, camCrop: 0 } },
   geo: { upright: 'off', dist: 0, vert: 0, horiz: 0, rot: 0, aspect: 0, scale: 100, ox: 0, oy: 0, constrain: true },
   crop: { x: 0, y: 0, w: 1, h: 1, angle: 0, rot90: 0, flipH: false, flipV: false, ratio: 'free' },
   sky: { on: false, preset: 'cumulus', amt: 100, exp: 0, temp: 0, edge: 40, gaps: 30, haze: 35, relight: 30, pos: 0, flip: false },

@@ -4,7 +4,7 @@
 <script>/* 線上更新開機程式：手機上若已下載比 APK 內建更新的介面版本，就改用新版（存在 IndexedDB）。
    新版連續兩次沒有正常開啟 → 自動退回 APK 內建版本。網址加上 #builtin 也會強制使用內建版本。 */
 (function () {
-  var B = '1.19.1'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
+  var B = '1.19.2'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
   if (window.__OTA || location.hash.indexOf('builtin') >= 0) return;
   var v = null; try { v = JSON.parse(localStorage.getItem('aip.ota') || 'null'); } catch (e) {}
   function gt(a, b) { a = String(a).split('.').map(Number); b = String(b).split('.').map(Number); for (var i = 0; i < Math.max(a.length, b.length); i++) { var p = a[i] || 0, q = b[i] || 0; if (p !== q) return p > q; } return false; }
@@ -1438,6 +1438,11 @@ vec2 outToSrc(vec2 pn){
 }
 vec2 PN(){return (uOutOrigin+gl_FragCoord.xy)/uOutSize;}
 vec2 TC(){return gl_FragCoord.xy/uWork;}
+
+/* v1.19.2：不會超出色域的飽和度：越接近色域邊緣增加得越少（不會把某個色版推到 0 以下變成黑點／色塊） */
+vec3 satK(vec3 p,float k){float g=dot(p,LUMA);if(k<=1.0)return g+(p-g)*max(k,0.0);
+  float km=1.0e3;for(int i=0;i<3;i++){float d=p[i]-g;if(d<-1.0e-4)km=min(km,g/(-d));else if(d>1.0e-4)km=min(km,(1.0-g)/d);}
+  km=max(km,1.0);float e=k-1.0,m=max(km-1.0,1.0e-3);return g+(p-g)*(1.0+m*(1.0-exp(-e/m)));}
 `;
 
   const FS_DEVELOP = HEAD + `
@@ -1548,7 +1553,7 @@ void main(){
     else{lin=mix(lin,uAtm,-uFx.z*0.55*(0.6+0.4*clamp(dk/Am,0.0,1.0)));}}
   float Y=max(dot(lin,LUMA),1.0e-6);float L=l2s1(Y);float Lb=G.g,Lc=G.r;float Lm=mix(L,Lb,0.72);
   float Lpre=l2s1(dot(B.rgb,LUMA));
-  float hl=uTone.y,sh=uTone.z;
+  float hl=uTone.y,sh=uTone.z;float gHiC=0.0;
   /* 亮部／陰影（v1.12，與 Lightroom 相同的局部方式）：在「邊緣保留的底層亮度」上計算調整量，再以線性增益乘回像素，
      局部對比與色彩比例都保留 → 陰影拉亮不發灰發虛、亮部壓暗不偏色；邊緣處改用像素本身亮度，避免光暈 */
   if(hl!=0.0||sh!=0.0){
@@ -1557,6 +1562,8 @@ void main(){
     b2+=sh*0.23*(1.0-smoothstep(0.03,0.52,bb))*(sh>0.0?(1.0-bb)*0.85+0.04:bb);
     float g=s2l1(max(b2,0.0))/max(s2l1(bb),1.0e-5);g=clamp(g,0.03,24.0);
     L=l2s1(Y*g);
+    /* v1.19.2：亮部往下拉時，像 Lightroom 一樣同時找回亮部裡的細節（雲的層次）與色彩，不會變成一片灰 */
+    if(hl<0.0){float wq=smoothstep(0.42,0.9,bb);L+=-hl*0.6*(Lpre-Lb)*wq;gHiC=-hl*0.45*wq;}
   }
   L+=uTone.w*0.22*smoothstep(0.35,1.0,L);
   L+=uBlacks*0.18*(1.0-smoothstep(0.0,0.45,L));
@@ -1567,6 +1574,7 @@ void main(){
   /* 曝光加亮時，高光柔和收邊（Lightroom 的曝光在色調曲線之前，亮部不會一下子衝白） */
   if(uRoll>0.0&&L>0.8){float r0=0.8+0.2*(1.0-exp(-(L-0.8)/0.2));L=mix(L,r0,uRoll);}
   float Yn=s2l1(max(L,0.0));vec3 l2=lin*(Yn/Y);
+  if(gHiC>0.0){l2=max(Yn+(l2-Yn)*(1.0+gHiC),vec3(0.0));}
   /* 氛圍光（v1.13）：用模糊過的亮度決定「光」與「暗」的範圍，以相乘方式改變光線顏色並加上柔和光暈，
      權重平滑（不看單一像素），所以不會產生色塊，也不會把雜訊放大成彩噪 */
   if(uAtmA>0.0){
@@ -1604,7 +1612,7 @@ void main(){
   /* 自然飽和度/飽和度 */
   if(uMono==0){float g=dot(p,LUMA);float mx2=max(p.r,max(p.g,p.b)),mn2=min(p.r,min(p.g,p.b));float s=clamp(mx2-mn2,0.0,1.0);
     float hu=rgb2hsv(clamp(p,0.0,1.0)).x;float skin=1.0-smoothstep(0.03,0.09,abs(hu-0.07));
-    float v=uVib*(1.0-s)*(uVib>0.0?(1.0-0.55*skin):1.0);p=g+(p-g)*max(0.0,1.0+uSat+v);}
+    float v=uVib*(1.0-s)*(uVib>0.0?(1.0-0.55*skin):1.0);p=satK(p,1.0+uSat+v);}
   /* 褪色 */
   if(uFx.w!=0.0)p=p*(1.0-uFx.w*0.12)+uFx.w*0.08;
   /* 移除色差（紫邊/綠邊） */
@@ -1656,14 +1664,15 @@ void main(){
   float Y=max(dot(lin,LUMA),1e-6);float L=l2s1(Y);float Lb=G.g,Lc=G.r;float Lm=mix(L,Lb,0.7);
   float hl=uMA1.z*w,sh=uMA1.w*w;
   L+=hl*0.32*smoothstep(0.45,0.97,Lm)*(hl<0.0?L:(1.05-L));
+  float mHiC=0.0;if(hl<0.0){float Lp0=l2s1(max(dot(texture(uB,tc).rgb,LUMA),1e-6));float wq=smoothstep(0.42,0.9,Lb);L+=-hl*0.6*(Lp0-Lb)*wq;mHiC=-hl*0.45*wq;}
   L+=sh*0.40*(1.0-smoothstep(0.03,0.55,Lm))*(sh>0.0?(1.0-L)*0.9+0.05:L);
   L+=uMA3.w*w*0.22*smoothstep(0.35,1.0,L);
   float Lk=clamp(L,0.0,1.0);L+=uMA1.y*w*0.45*(L-0.46)*4.0*Lk*(1.0-Lk);
   float Lpre=l2s1(dot(texture(uB,tc).rgb,LUMA));float midw=1.0-pow(abs(2.0*clamp(L,0.0,1.0)-1.0),2.0);
   L+=uMA2.w*w*0.6*(Lpre-Lc)*midw;
   if(uHasT==1){vec2 tb=texture(uT,tc).rg;L+=uMA3.y*w*1.6*(Lpre-tb.g);L+=uMA3.z*w*1.0*(Lpre-tb.r);}
-  float Yn=s2l1(max(L,0.0));lin*=Yn/Y;vec3 p=l2s(lin);
-  float g=dot(p,LUMA);p=g+(p-g)*max(0.0,1.0+uMA2.z*w);
+  float Yn=s2l1(max(L,0.0));lin*=Yn/Y;if(mHiC>0.0)lin=max(Yn+(lin-Yn)*(1.0+mHiC),vec3(0.0));vec3 p=l2s(lin);
+  p=satK(p,1.0+uMA2.z*w);
   o=vec4(p,C.a);
 }`;
 
@@ -2548,7 +2557,7 @@ const DEF_EDIT = {
   sharp: { amt: 0, rad: 1.0, det: 25, mask: 0 },
   nr: { lum: 0, ldet: 50, lcon: 0, col: 0, cdet: 50, csm: 50 },
   ai: { on: false, amt: 60, model: 'fast', chroma: 60 },
-  optics: { ca: false, purple: 0, green: 0, dist: 0, vigCorr: 0, prof: { on: false, key: '', name: '', d: 100, v: 100, tca: true, p: null, camCrop: 0 } },
+  optics: { ca: true, purple: 100, green: 100, dist: 0, vigCorr: 0, prof: { on: false, key: '', name: '', d: 100, v: 100, tca: true, p: null, camCrop: 0 } },
   geo: { upright: 'off', dist: 0, vert: 0, horiz: 0, rot: 0, aspect: 0, scale: 100, ox: 0, oy: 0, constrain: true },
   crop: { x: 0, y: 0, w: 1, h: 1, angle: 0, rot90: 0, flipH: false, flipV: false, ratio: 'free' },
   sky: { on: false, preset: 'cumulus', amt: 100, exp: 0, temp: 0, edge: 40, gaps: 30, haze: 35, relight: 30, pos: 0, flip: false },
@@ -4658,7 +4667,8 @@ const Editor = {
       h('h4', null, '✨ AI 智慧增強'),
       h('div', { class: 'sub' }, '分析場景的亮度分佈、高光溢出、色彩與 ISO 雜訊風險，自動調整光線、局部對比、色彩，並單獨救回天空亮部。高 ISO 相片會節制暗部提亮、同時壓穩黑色，避免拉出雜訊色塊。'),
       h('div', { class: 'acts' }, h('button', { class: 'btn pri', onclick: () => this.runAiEnh() }, ae.d ? '↻ 重新分析' : '✨ 一鍵 AI 增強'),
-        ae.d || ae.clear ? h('button', { class: 'btn sm', onclick: () => { this.aiEnhApply(0, 0); this.edit.aiEnh = { amt: 0 }; this.changed(); this.commit('移除 AI 增強'); this.renderPanel(); } }, '移除') : null),
+        ae.d || ae.clear ? h('button', { class: 'btn sm', onclick: () => { this.aiEnhApply(0, 0); this.edit.aiEnh = { amt: 0 }; this.changed(); this.commit('移除 AI 增強'); this.renderPanel(); } }, '移除') : null,
+        isApp ? h('button', { class: 'btn sm', onclick: () => this.lrEdit() }, '🅻 用 Lightroom 修圖') : null),
       ae.d ? this.slider('強度', () => this.edit.aiEnh.amt, (v) => this.aiEnhApply(v), 0, 100, 1, 80, { onCommit: () => this.commit('AI 增強強度') }) : null,
       this.slider('通透感', () => (this.edit.aiEnh || {}).clear || 0, (v) => this.aiEnhApply(null, v), 0, 100, 1, 0, { onCommit: () => this.commit('AI 通透感') }),
       h('div', { class: 'sub' }, '通透感：去除灰濛（大氣透視）、提升中大尺度的局部對比與微細節、穩住黑位並保護高光，讓畫面更清透立體；高 ISO 時會自動減少細節強化，避免放大雜訊。'),
@@ -4684,7 +4694,7 @@ const Editor = {
         if (tone) { const zone = AutoLight.needZones(this.ses, this.edit); const r = zone ? AutoLight.solveZones(this.ses, this.edit, { iso }) : AutoLight.solve(this.ses, this.edit, { iso });
           const info = r._info, zm = r._masks || [], ex = r._extra; delete r._info; delete r._masks; delete r._extra; Object.assign(this.edit, r);
           this.edit.masks = this.edit.masks.filter((m) => !m.aiZone).concat(zm); if (ex) Object.assign(this.edit, ex);
-          if (wb) { const c = AutoLight.color(this.ses, this.edit); this.edit.vibrance = c.vibrance; this.edit.saturation = c.saturation; }
+          if (wb) { const c = AutoLight.color(this.ses, this.edit, { iso }); this.edit.vibrance = c.vibrance; this.edit.saturation = c.saturation; }
           msg = `已自動調整光線（${info.scene}場景）` + (wb ? '與色彩' : ''); }
       } catch (e) { console.error(e); const id = imgData(this.ses.aiPrev || this.ses.prev, 320); if (wb) { const w = autoWB(id); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; } if (tone) Object.assign(this.edit, autoTone(id, (this.rec.exif || {}).iso)); }
       this.busy(null); this.changed(); this.commit(tone && wb ? '自動' : tone ? '自動光線' : '自動白平衡'); this.renderPanel(); toast(msg, 2600);
@@ -4799,7 +4809,7 @@ const Editor = {
     // v1.13：光線部分改用閉迴路求解（實際渲染、量測、修正），過曝救高光、太暗提陰影都算到位
     try { const r = AutoLight.solve(this.ses, this.edit, { iso: ex.iso }); delete r._info; const ae = this.edit.aiEnh; for (const k of AutoLight.TONE) ae.d[k] = (k === 'exposure' ? Math.round((r[k] - ae.base[k]) * 100) / 100 : Math.round(r[k] - ae.base[k])); this.aiEnhApply(100);
       // v1.19.1：鮮豔度依照片原本彩度自動補足（之前固定只加一點點，顏色偏淡）
-      const c = AutoLight.color(this.ses, this.edit); for (const k of ['vibrance', 'saturation']) ae.d[k] = Math.round((ae.d[k] || 0) + (c[k] || 0) - (this.edit[k] || 0)); this.aiEnhApply(100); } catch (e) { console.warn('AutoLight', e); }
+      const c = AutoLight.color(this.ses, this.edit, { iso: ex.iso }); for (const k of ['vibrance', 'saturation']) ae.d[k] = Math.round((ae.d[k] || 0) + (c[k] || 0) - (this.edit[k] || 0)); this.aiEnhApply(100); } catch (e) { console.warn('AutoLight', e); }
     this.changed(); this.commit('AI 智慧增強'); this.renderPanel();
     toast(ex.iso >= 1600 ? `AI 增強完成（ISO ${ex.iso}：已節制暗部提亮，建議再開 AI 降噪）` : 'AI 增強完成，可用「強度」調整', 3500);
   },
@@ -5274,6 +5284,29 @@ const Editor = {
       toast(r.pkg ? '已開啟手機相簿：可用「AI 圖像助理」裡的 AI 消除等功能，用完儲存（另存或覆蓋都可以），回到這個 App 就會自動取回' : '請選擇用手機相簿編輯；完成後儲存並回到這個 App', 7000);
     } catch (e) { this.busy(null); console.error(e); toast('無法開啟手機相簿編輯：' + e.message, 5000); }
   },
+  /* v1.19.2：用 Lightroom 修圖：把原始 RAW（最好的畫質）分享給 Lightroom，修好「儲存到裝置」後回到這裡自動取回、名稱不變 */
+  async lrEdit() {
+    const LR = 'com.adobe.lrmobile';
+    if (!(isApp && window.AIP2 && AIP2.openWith)) { toast('這個功能需要安裝 v1.19.2 以上的 APK', 4000); return; }
+    if (AIP2.hasApp && !AIP2.hasApp(LR)) { Upd.dialog('手機沒有安裝 Lightroom', '請先從 Play 商店安裝 Adobe Lightroom。', [['前往 Play 商店', () => Upd.open('https://play.google.com/store/apps/details?id=' + LR)], ['取消', null]]); return; }
+    const rec = this.rec, id = rec.id; await this.persist();
+    let src = '';
+    try {
+      if (rec.mid != null && !rec.fixOrig && !rec.masterOri1) src = 'content://media/external/images/media/' + rec.mid;   // 相簿裡的原始檔（RAW）
+      else {   // 已經用 AI 修復過（或不是從相簿匯入）：送目前的原圖（不含調整），讓 Lightroom 從頭調
+        this.busy('準備相片…', true);
+        const full = await this.ses.ensureFull(); const c = mkCanvas(full.width, full.height); c.getContext('2d').drawImage(full, 0, 0);
+        const blob = await canvasBlob(c, 'image/jpeg', 0.97); c.width = c.height = 1;
+        await Exporter.save((rec.name || 'photo').replace(/\.[^.]+$/, '') + '_給Lightroom.jpg', 'image/jpeg', new Uint8Array(await blob.arrayBuffer()));
+        this.busy(null);
+      }
+      const r = JSON.parse(AIP2.openWith(src, LR, 'send') || '{}');
+      if (!r.ok) throw new Error(r.err === 'notInstalled' ? '手機沒有安裝 Lightroom' : r.err || '無法開啟 Lightroom');
+      DB.del('ai', 'extSent:' + id).catch(() => {});
+      this.extPend = { id, t: Date.now(), src: r.src || '', t0: r.t0 || 0, mod: r.mod || 0, temp: !src, mode: 'lr' }; lsSet('aip.extPend', this.extPend);
+      toast('已把' + (src ? '原始 RAW' : '相片') + '送到 Lightroom：修好後按右上角「分享 → 匯出為…／儲存到裝置」（JPG），回到這個 App 就會自動取回', 8000);
+    } catch (e) { this.busy(null); toast('無法開啟 Lightroom：' + e.message, 5000); }
+  },
   /* 回到 App 時自動找編輯結果（相簿存檔可能慢幾秒，會重試幾次） */
   async extBack(force) {
     const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult) || this.extBusy) return;
@@ -5282,11 +5315,11 @@ const Editor = {
     try {
       let r = {};
       for (let k = 0; k < 6; k++) {
-        r = JSON.parse((AIP2.editResult2 ? AIP2.editResult2(P.src || '', P.t0 || 0, P.mod || 0) : AIP2.editResult()) || '{}');
+        r = JSON.parse((AIP2.editResult3 ? AIP2.editResult3(P.src || '', P.t0 || 0, P.mod || 0, P.temp !== false) : AIP2.editResult2 ? AIP2.editResult2(P.src || '', P.t0 || 0, P.mod || 0) : AIP2.editResult()) || '{}');
         if (r.state === 'new' || r.state === 'same') break; await sleep(2000);
       }
       if (r.state !== 'new' && r.state !== 'same') {
-        Upd.dialog('還沒有找到編輯後的相片', '如果還在手機相簿裡編輯，完成並儲存後再回來就會自動取回；也可以按「再檢查一次」。' + (r.err ? '<br><small>' + Upd.esc(r.err) + '</small>' : ''), [['再檢查一次', () => this.extBack(true)], ['不要了', () => { this.extPend = null; lsSet('aip.extPend', null); try { AIP2.editCleanup(); } catch (e) {} }], ['稍後', null]]);
+        Upd.dialog('還沒有找到編輯後的相片', (P.mode === 'lr' ? '在 Lightroom 修好後，請按「分享 → 匯出為…」或「儲存到裝置」存成 JPG，再回到這裡就會自動取回；' : '如果還在手機相簿裡編輯，完成並儲存後再回來就會自動取回；') + '也可以按「再檢查一次」。' + (r.err ? '<br><small>' + Upd.esc(r.err) + '</small>' : ''), [['再檢查一次', () => this.extBack(true)], ['不要了', () => { this.extPend = null; lsSet('aip.extPend', null); try { AIP2.editCleanup(); } catch (e) {} }], ['稍後', null]]);
         return;
       }
       this.extPend = null; lsSet('aip.extPend', null);
@@ -5299,11 +5332,11 @@ const Editor = {
       rec.extPrevEdit = rec.edit; rec.edit = normEdit({}); await DB.put('photos', rec);
       const lr = Library.recs.find((x) => x.id === P.id); if (lr) { lr.edit = rec.edit; lr.extPrevEdit = rec.extPrevEdit; }
       if (this.active && this.rec && this.rec.id === P.id) { this.edit = normEdit({}); this.rec.edit = this.edit; this.rec.extPrevEdit = rec.extPrevEdit; }
-      await Cloud.applyFix({ id: P.id, ops: ['erase'] }, out.blob, null, { done: ['erase'], ext: '已套用手機相簿的編輯（名稱維持「' + rec.name + '」）' + out.note });
+      await Cloud.applyFix({ id: P.id, ops: ['erase'] }, out.blob, null, { done: ['erase'], ext: (P.mode === 'lr' ? '已套用 Lightroom 修好的相片' : '已套用手機相簿的編輯') + '（名稱維持「' + rec.name + '」）' + out.note });
       DB.del('ai', 'extSent:' + P.id).catch(() => {});
       try { AIP2.editCleanup(); } catch (e) {}
       this.busy(null);
-      if (r.state === 'new') toast('手機相簿另外存了一張「' + (r.name || '新相片') + '」，不需要的話可以到相簿刪除', 6000);
+      if (r.state === 'new') toast((P.mode === 'lr' ? 'Lightroom 在相簿另外存了一張「' : '手機相簿另外存了一張「') + (r.name || '新相片') + '」，不需要的話可以到相簿刪除', 6000);
     } catch (e) { this.busy(null); console.error(e); toast('取回編輯結果失敗：' + e.message, 5000); }
     finally { this.extBusy = false; }
   },
@@ -5449,7 +5482,7 @@ const Editor = {
       h('button', { class: 'btn', disabled: !!job, onclick: () => this.detectPeople({ lasso: true }) }, '⭕ 圈選物件')));
     if (job) box.append(h('div', { class: 'sub' }, '這張相片正在雲端處理中，完成後再選擇。'));
     box.append(this.engineCard());
-    if (isApp) box.append(h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => this.extEdit() }, '📱 用手機相簿的 AI 編輯（OPPO AI 消除等）')),
+    if (isApp) box.append(h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => this.extEdit() }, '📱 用手機相簿的 AI 編輯（OPPO AI 消除等）'), h('button', { class: 'btn sm', onclick: () => this.lrEdit() }, '🅻 用 Lightroom 修圖')),
       h('div', { class: 'sub' }, '會開啟手機內建相簿的編輯畫面；用完 AI 消除等功能並儲存後回到這裡，結果會自動套用到這張，相片名稱不變。'));
     return box;
   },
@@ -7161,13 +7194,14 @@ const AutoLight = {
     return { t, fS, fH, after: s.all };
   },
   /* v1.19.1：鮮豔度／飽和度 — 依照片原本的彩度補到自然飽滿（Lightroom 的 Adobe 色彩設定檔本身就比較鮮豔，RAW 原始色比較淡） */
-  color(ses, edit) {
+  color(ses, edit, o = {}) {
+    const iso = o.iso || 100, isoF = iso >= 6400 ? 0.45 : iso >= 3200 ? 0.6 : iso >= 1600 ? 0.75 : iso >= 800 ? 0.9 : 1;   // 高 ISO：顏色加少一點，避免把彩色雜訊放大成色塊
     const e = normEdit(clone(edit)); const s0 = this.stats(this.render(ses, e));
-    const tgt = clamp(s0.sat * 1.7 + 0.03, 0.3, 0.55); let s = s0;
+    const tgt = clamp(s0.sat * (1 + 0.7 * isoF) + 0.03 * isoF, 0.3 * isoF, 0.55); let s = s0;
     for (let k = 0; k < 3; k++) {
       const d = tgt - s.sat; if (Math.abs(d) < 0.012) break;
-      e.vibrance = Math.round(clamp((e.vibrance || 0) + d * 220, 0, 60));
-      if (e.vibrance >= 60 && d > 0.02) e.saturation = Math.round(clamp((e.saturation || 0) + d * 90, 0, 18));
+      e.vibrance = Math.round(clamp((e.vibrance || 0) + d * 220, 0, 60 * isoF));
+      if (e.vibrance >= 60 * isoF && d > 0.02 && isoF >= 0.9) e.saturation = Math.round(clamp((e.saturation || 0) + d * 90, 0, 14));
       s = this.stats(this.render(ses, e));
     }
     return { vibrance: e.vibrance, saturation: e.saturation, sat0: s0.sat, sat: s.sat };
@@ -7662,7 +7696,7 @@ const Settings = {
 };
 
 /* ================= App ================= */
-const APP_VERSION = '1.19.1';
+const APP_VERSION = '1.19.2';
 const App = {
   view: 'lib', clip: null, userPresets: [],
   async init() {

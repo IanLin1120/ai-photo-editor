@@ -165,13 +165,14 @@ const AutoLight = {
     return { t, fS, fH, after: s.all };
   },
   /* v1.19.1：鮮豔度／飽和度 — 依照片原本的彩度補到自然飽滿（Lightroom 的 Adobe 色彩設定檔本身就比較鮮豔，RAW 原始色比較淡） */
-  color(ses, edit) {
+  color(ses, edit, o = {}) {
+    const iso = o.iso || 100, isoF = iso >= 6400 ? 0.45 : iso >= 3200 ? 0.6 : iso >= 1600 ? 0.75 : iso >= 800 ? 0.9 : 1;   // 高 ISO：顏色加少一點，避免把彩色雜訊放大成色塊
     const e = normEdit(clone(edit)); const s0 = this.stats(this.render(ses, e));
-    const tgt = clamp(s0.sat * 1.7 + 0.03, 0.3, 0.55); let s = s0;
+    const tgt = clamp(s0.sat * (1 + 0.7 * isoF) + 0.03 * isoF, 0.3 * isoF, 0.55); let s = s0;
     for (let k = 0; k < 3; k++) {
       const d = tgt - s.sat; if (Math.abs(d) < 0.012) break;
-      e.vibrance = Math.round(clamp((e.vibrance || 0) + d * 220, 0, 60));
-      if (e.vibrance >= 60 && d > 0.02) e.saturation = Math.round(clamp((e.saturation || 0) + d * 90, 0, 18));
+      e.vibrance = Math.round(clamp((e.vibrance || 0) + d * 220, 0, 60 * isoF));
+      if (e.vibrance >= 60 * isoF && d > 0.02 && isoF >= 0.9) e.saturation = Math.round(clamp((e.saturation || 0) + d * 90, 0, 14));
       s = this.stats(this.render(ses, e));
     }
     return { vibrance: e.vibrance, saturation: e.saturation, sat0: s0.sat, sat: s.sat };
