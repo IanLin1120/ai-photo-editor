@@ -15,7 +15,7 @@ const TOOLS = [['presets', '預設集'], ['crop', '裁切'], ['edit', '編輯'],
 const SUBS = [['auto', 'AI 自動'], ['sky', '天空'], ['profile', '設定檔'], ['light', '光線'], ['curve', '曲線'], ['color', '色彩'], ['effects', '效果'], ['detail', '細節'], ['optics', '光學'], ['geo', '幾何']];
 const HUES = [['紅', '#d8443a', 0], ['橙', '#e88a2e', 30], ['黃', '#e6c535', 60], ['綠', '#4fa34a', 120], ['淺綠', '#3fb8b0', 180], ['藍', '#3d6fd1', 240], ['紫', '#7a4fc9', 270], ['洋紅', '#c94fae', 300]];
 const RATIOS = [['free', '自由'], ['orig', '原始'], ['1:1', '1:1'], ['4:5', '4:5'], ['5:4', '5:4'], ['3:2', '3:2'], ['2:3', '2:3'], ['16:9', '16:9'], ['9:16', '9:16'], ['4:3', '4:3'], ['3:4', '3:4']];
-const MASK_TYPES = [['brush', '筆刷', '🖌'], ['linear', '線性漸層', '▤'], ['radial', '放射狀漸層', '◎'], ['sky', '選取天空', '☁'], ['lum', '明亮度範圍', '◐'], ['color', '顏色範圍', '🎨'], ['all', '整張影像', '▣']];
+const MASK_TYPES = [['brush', '筆刷', '🖌'], ['linear', '線性漸層', '▤'], ['radial', '放射狀漸層', '◎'], ['sky', '選取天空', '☁'], ['lum', '明亮度範圍', '◐'], ['zone', '亮暗分區（平滑）', '◑'], ['color', '顏色範圍', '🎨'], ['all', '整張影像', '▣']];
 
 const Editor = {
   active: false, ses: null, rec: null, edit: null, hist: [], hi: -1, tool: 'edit', sub: 'light',
@@ -478,7 +478,9 @@ const Editor = {
       try {
         const iso = (this.rec.exif || {}).iso;
         if (wb) { const w = AutoLight.wb(this.ses, this.edit); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; if (w.note) msg += '（' + w.note + '）'; }
-        if (tone) { const r = AutoLight.solve(this.ses, this.edit, { iso }); const info = r._info; delete r._info; Object.assign(this.edit, r);
+        if (tone) { const zone = AutoLight.needZones(this.ses, this.edit); const r = zone ? AutoLight.solveZones(this.ses, this.edit, { iso }) : AutoLight.solve(this.ses, this.edit, { iso });
+          const info = r._info, zm = r._masks || [], ex = r._extra; delete r._info; delete r._masks; delete r._extra; Object.assign(this.edit, r);
+          this.edit.masks = this.edit.masks.filter((m) => !m.aiZone).concat(zm); if (ex) Object.assign(this.edit, ex);
           if (wb) { this.edit.vibrance = Math.max(this.edit.vibrance || 0, Math.round(clamp((0.36 - info.after.sat) * 60, 6, 22))); }
           msg = `已自動調整光線（${info.scene}場景）` + (wb ? '與色彩' : ''); }
       } catch (e) { console.error(e); const id = imgData(this.ses.aiPrev || this.ses.prev, 320); if (wb) { const w = autoWB(id); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; } if (tone) Object.assign(this.edit, autoTone(id, (this.rec.exif || {}).iso)); }
@@ -1389,7 +1391,7 @@ const Editor = {
         this.slider('流量', () => this.brush.flow * 100, (v) => { this.brush.flow = v / 100; }, 5, 100, 1, 80, { onCommit: () => {}, onInput: () => {} }));
     }
     if (m.type === 'radial') b.append(this.slider('羽化', () => m.p.feather, (v) => { m.p.feather = v; }, 0, 100, 1, 50));
-    if (m.type === 'lum') b.append(this.slider('範圍下限', () => m.p.lo, (v) => { m.p.lo = Math.min(v, m.p.hi - 1); }, 0, 100, 1, 50), this.slider('範圍上限', () => m.p.hi, (v) => { m.p.hi = Math.max(v, m.p.lo + 1); }, 0, 100, 1, 100), this.slider('平滑', () => m.p.sm, (v) => { m.p.sm = v; }, 0, 50, 1, 15));
+    if (m.type === 'lum' || m.type === 'zone') b.append(this.slider('範圍下限', () => m.p.lo, (v) => { m.p.lo = Math.min(v, m.p.hi - 1); }, 0, 100, 1, 50), this.slider('範圍上限', () => m.p.hi, (v) => { m.p.hi = Math.max(v, m.p.lo + 1); }, 0, 100, 1, 100), this.slider('平滑', () => m.p.sm, (v) => { m.p.sm = v; }, 0, 50, 1, 15));
     if (m.type === 'color') {
       b.append(h('div', { class: 'lbl2' }, h('span', null, '目標顏色'), h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, h('span', { style: { width: '26px', height: '26px', borderRadius: '8px', background: `rgb(${m.p.r * 255},${m.p.g * 255},${m.p.b * 255})`, border: '2px solid #fff' } }), h('button', { class: 'btn sm' + (this.picking === 'color' ? ' on' : ''), onclick: () => { this.picking = this.picking === 'color' ? null : 'color'; this.renderPanel(); } }, '💧 從畫面選取'))));
       b.append(this.slider('範圍', () => m.p.range, (v) => { m.p.range = v; }, 1, 100, 1, 30));
@@ -1413,6 +1415,7 @@ const Editor = {
     else if (type === 'brush') { m.p = { strokes: [] }; this.brush.erase = false; toast('在畫面上拖曳繪製筆刷範圍'); }
     else if (type === 'sky') { this.ses.ensureSky(); m.adj.exposure = -0.3; m.adj.saturation = 15; if (this.ses.skyFrac < 0.01) toast('未偵測到明顯天空'); }
     else if (type === 'lum') { m.p = { lo: 60, hi: 100, sm: 15 }; m.adj.highlights = -30; }
+    else if (type === 'zone') { m.p = { lo: 55, hi: 100, sm: 12 }; m.adj.exposure = -0.3; }
     else if (type === 'color') { m.p = { r: 0.25, g: 0.45, b: 0.8, range: 30 }; this.picking = 'color'; toast('點一下畫面選取要調整的顏色'); }
     this.edit.masks.push(m); this.selMask = m.id; this.vizOn = type !== 'linear' && type !== 'radial'; this.changed(); this.commit('新增' + (MASK_TYPES.find((x) => x[0] === type) || [])[1]); this.renderPanel();
     if (this.vizOn) setTimeout(() => { if (this.selMask === m.id) { this.vizOn = false; this.changed(); this.renderPanel(); } }, 1600);

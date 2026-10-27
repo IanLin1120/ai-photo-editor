@@ -4,7 +4,7 @@
 <script>/* 線上更新開機程式：手機上若已下載比 APK 內建更新的介面版本，就改用新版（存在 IndexedDB）。
    新版連續兩次沒有正常開啟 → 自動退回 APK 內建版本。網址加上 #builtin 也會強制使用內建版本。 */
 (function () {
-  var B = '1.18.1'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
+  var B = '1.19.0'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
   if (window.__OTA || location.hash.indexOf('builtin') >= 0) return;
   var v = null; try { v = JSON.parse(localStorage.getItem('aip.ota') || 'null'); } catch (e) {}
   function gt(a, b) { a = String(a).split('.').map(Number); b = String(b).split('.').map(Number); for (var i = 0; i < Math.max(a.length, b.length); i++) { var p = a[i] || 0, q = b[i] || 0; if (p !== q) return p > q; } return false; }
@@ -1628,6 +1628,7 @@ void main(){
 uniform sampler2D uC,uB,uT,uGuide,uBrush,uSky;uniform vec4 uBrushRect;uniform int uHasT;
 uniform int uMType,uInv;uniform float uMAmt;uniform vec4 uMP1,uMP2;uniform vec2 uSAsp;uniform vec3 uAtm;
 uniform vec4 uMA1,uMA2,uMA3;uniform int uViz;
+float gZB,gZP; // v1.19：亮度區域（AI 分區）用的「邊緣保留底層亮度」
 float maskW(vec2 pn,vec3 pc){
   vec2 s=outToSrc(pn);vec2 q=s*uSAsp;float w=0.0;
   if(uMType==1){vec2 a=uMP1.xy*uSAsp,b=uMP1.zw*uSAsp;float t=dot(q-a,b-a)/max(dot(b-a,b-a),1e-8);w=1.0-smoothstep(0.0,1.0,clamp(t,0.0,1.0));}
@@ -1638,10 +1639,13 @@ float maskW(vec2 pn,vec3 pc){
   else if(uMType==6){vec3 a=rgb2hsv(clamp(pc,0.0,1.0)),b=rgb2hsv(clamp(uMP1.rgb,0.0,1.0));float dh=abs(a.x-b.x);dh=min(dh,1.0-dh);
     float d=dh*2.6*min(a.y,b.y)*2.0+abs(a.y-b.y)*0.7+abs(a.z-b.z)*0.45;w=1.0-smoothstep(uMP1.a,uMP1.a+0.12,d);}
   else if(uMType==7){w=1.0;}
+  else if(uMType==8){float sm=max(uMP1.z,0.002);w=smoothstep(uMP1.x-sm,uMP1.x+sm*0.25,gZB)*(1.0-smoothstep(uMP1.y-sm*0.25,uMP1.y+sm,gZB));
+    /* 像素本身也要在範圍附近（邊緣旁的天空不會被當成暗區提亮 → 沒有光暈） */ if(uMP1.x>0.01)w*=smoothstep(uMP1.x-0.3,uMP1.x,gZP);if(uMP1.y<0.99)w*=1.0-smoothstep(uMP1.y,uMP1.y+0.3,gZP);}
   if(uInv==1)w=1.0-w;return clamp(w,0.0,1.0)*uMAmt;
 }
 void main(){
   vec2 tc=TC();vec2 pn=PN();vec4 C=texture(uC,tc);if(C.a==0.0){o=uViz==1?vec4(0.0):C;return;}
+  if(uMType==8){float Lp=l2s1(max(dot(texture(uB,tc).rgb,LUMA),1e-6));float Lg=texture(uGuide,pn).g;float d=Lp-Lg;gZB=Lg+d*(1.0-exp(-d*d/0.004));gZP=Lp;}
   float w=maskW(pn,C.rgb);
   if(uViz==1){o=vec4(w,w,w,1.0);return;}
   if(w<0.001){o=C;return;}
@@ -1998,7 +2002,7 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
     }
   }
   function clamp01x(v) { return Math.max(0, Math.min(2, v)); }
-  const MT = { linear: 1, radial: 2, brush: 3, sky: 4, lum: 5, color: 6, all: 7 };
+  const MT = { linear: 1, radial: 2, brush: 3, sky: 4, lum: 5, color: 6, all: 7, zone: 8 };
   function setMaskUniforms(m, job, G) {
     set('uMType', MT[m.type] || 7); set('uInv', m.invert ? 1 : 0); set('uMAmt', (m.amt == null ? 100 : m.amt) / 100);
     const L = Math.max(G.SW, G.SH); set('uSAsp', [G.SW / L, G.SH / L]);
@@ -2006,7 +2010,7 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
     if (m.type === 'linear') set('uMP1', [p.ax, p.ay, p.bx, p.by]);
     else if (m.type === 'radial') { set('uMP1', [p.cx, p.cy, p.rx, p.ry]); set('uMP2', [p.ang || 0, (p.feather == null ? 50 : p.feather) / 100, 0, 0]); }
     else if (m.type === 'sky') set('uMP1', [job.skyLmin || 0.3, 0, 0, 0]);
-    else if (m.type === 'lum') set('uMP1', [p.lo / 100, p.hi / 100, p.sm / 100, 0]);
+    else if (m.type === 'lum' || m.type === 'zone') set('uMP1', [p.lo / 100, p.hi / 100, p.sm / 100, 0]);
     else if (m.type === 'color') set('uMP1', [p.r, p.g, p.b, (p.range == null ? 30 : p.range) / 100 * 0.6]);
     if (m.type === 'brush') { const b = job.brush && job.brush[m.id]; set('uBrush', b ? b.tex : null); set('uBrushRect', b ? b.rect : [0, 0, 1, 1]); }
     else set('uBrush', null);
@@ -4214,7 +4218,7 @@ const TOOLS = [['presets', '預設集'], ['crop', '裁切'], ['edit', '編輯'],
 const SUBS = [['auto', 'AI 自動'], ['sky', '天空'], ['profile', '設定檔'], ['light', '光線'], ['curve', '曲線'], ['color', '色彩'], ['effects', '效果'], ['detail', '細節'], ['optics', '光學'], ['geo', '幾何']];
 const HUES = [['紅', '#d8443a', 0], ['橙', '#e88a2e', 30], ['黃', '#e6c535', 60], ['綠', '#4fa34a', 120], ['淺綠', '#3fb8b0', 180], ['藍', '#3d6fd1', 240], ['紫', '#7a4fc9', 270], ['洋紅', '#c94fae', 300]];
 const RATIOS = [['free', '自由'], ['orig', '原始'], ['1:1', '1:1'], ['4:5', '4:5'], ['5:4', '5:4'], ['3:2', '3:2'], ['2:3', '2:3'], ['16:9', '16:9'], ['9:16', '9:16'], ['4:3', '4:3'], ['3:4', '3:4']];
-const MASK_TYPES = [['brush', '筆刷', '🖌'], ['linear', '線性漸層', '▤'], ['radial', '放射狀漸層', '◎'], ['sky', '選取天空', '☁'], ['lum', '明亮度範圍', '◐'], ['color', '顏色範圍', '🎨'], ['all', '整張影像', '▣']];
+const MASK_TYPES = [['brush', '筆刷', '🖌'], ['linear', '線性漸層', '▤'], ['radial', '放射狀漸層', '◎'], ['sky', '選取天空', '☁'], ['lum', '明亮度範圍', '◐'], ['zone', '亮暗分區（平滑）', '◑'], ['color', '顏色範圍', '🎨'], ['all', '整張影像', '▣']];
 
 const Editor = {
   active: false, ses: null, rec: null, edit: null, hist: [], hi: -1, tool: 'edit', sub: 'light',
@@ -4677,7 +4681,9 @@ const Editor = {
       try {
         const iso = (this.rec.exif || {}).iso;
         if (wb) { const w = AutoLight.wb(this.ses, this.edit); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; if (w.note) msg += '（' + w.note + '）'; }
-        if (tone) { const r = AutoLight.solve(this.ses, this.edit, { iso }); const info = r._info; delete r._info; Object.assign(this.edit, r);
+        if (tone) { const zone = AutoLight.needZones(this.ses, this.edit); const r = zone ? AutoLight.solveZones(this.ses, this.edit, { iso }) : AutoLight.solve(this.ses, this.edit, { iso });
+          const info = r._info, zm = r._masks || [], ex = r._extra; delete r._info; delete r._masks; delete r._extra; Object.assign(this.edit, r);
+          this.edit.masks = this.edit.masks.filter((m) => !m.aiZone).concat(zm); if (ex) Object.assign(this.edit, ex);
           if (wb) { this.edit.vibrance = Math.max(this.edit.vibrance || 0, Math.round(clamp((0.36 - info.after.sat) * 60, 6, 22))); }
           msg = `已自動調整光線（${info.scene}場景）` + (wb ? '與色彩' : ''); }
       } catch (e) { console.error(e); const id = imgData(this.ses.aiPrev || this.ses.prev, 320); if (wb) { const w = autoWB(id); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; } if (tone) Object.assign(this.edit, autoTone(id, (this.rec.exif || {}).iso)); }
@@ -5584,7 +5590,7 @@ const Editor = {
         this.slider('流量', () => this.brush.flow * 100, (v) => { this.brush.flow = v / 100; }, 5, 100, 1, 80, { onCommit: () => {}, onInput: () => {} }));
     }
     if (m.type === 'radial') b.append(this.slider('羽化', () => m.p.feather, (v) => { m.p.feather = v; }, 0, 100, 1, 50));
-    if (m.type === 'lum') b.append(this.slider('範圍下限', () => m.p.lo, (v) => { m.p.lo = Math.min(v, m.p.hi - 1); }, 0, 100, 1, 50), this.slider('範圍上限', () => m.p.hi, (v) => { m.p.hi = Math.max(v, m.p.lo + 1); }, 0, 100, 1, 100), this.slider('平滑', () => m.p.sm, (v) => { m.p.sm = v; }, 0, 50, 1, 15));
+    if (m.type === 'lum' || m.type === 'zone') b.append(this.slider('範圍下限', () => m.p.lo, (v) => { m.p.lo = Math.min(v, m.p.hi - 1); }, 0, 100, 1, 50), this.slider('範圍上限', () => m.p.hi, (v) => { m.p.hi = Math.max(v, m.p.lo + 1); }, 0, 100, 1, 100), this.slider('平滑', () => m.p.sm, (v) => { m.p.sm = v; }, 0, 50, 1, 15));
     if (m.type === 'color') {
       b.append(h('div', { class: 'lbl2' }, h('span', null, '目標顏色'), h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, h('span', { style: { width: '26px', height: '26px', borderRadius: '8px', background: `rgb(${m.p.r * 255},${m.p.g * 255},${m.p.b * 255})`, border: '2px solid #fff' } }), h('button', { class: 'btn sm' + (this.picking === 'color' ? ' on' : ''), onclick: () => { this.picking = this.picking === 'color' ? null : 'color'; this.renderPanel(); } }, '💧 從畫面選取'))));
       b.append(this.slider('範圍', () => m.p.range, (v) => { m.p.range = v; }, 1, 100, 1, 30));
@@ -5608,6 +5614,7 @@ const Editor = {
     else if (type === 'brush') { m.p = { strokes: [] }; this.brush.erase = false; toast('在畫面上拖曳繪製筆刷範圍'); }
     else if (type === 'sky') { this.ses.ensureSky(); m.adj.exposure = -0.3; m.adj.saturation = 15; if (this.ses.skyFrac < 0.01) toast('未偵測到明顯天空'); }
     else if (type === 'lum') { m.p = { lo: 60, hi: 100, sm: 15 }; m.adj.highlights = -30; }
+    else if (type === 'zone') { m.p = { lo: 55, hi: 100, sm: 12 }; m.adj.exposure = -0.3; }
     else if (type === 'color') { m.p = { r: 0.25, g: 0.45, b: 0.8, range: 30 }; this.picking = 'color'; toast('點一下畫面選取要調整的顏色'); }
     this.edit.masks.push(m); this.selMask = m.id; this.vizOn = type !== 'linear' && type !== 'radial'; this.changed(); this.commit('新增' + (MASK_TYPES.find((x) => x[0] === type) || [])[1]); this.renderPanel();
     if (this.vizOn) setTimeout(() => { if (this.selMask === m.id) { this.vizOn = false; this.changed(); this.renderPanel(); } }, 1600);
@@ -7004,7 +7011,7 @@ const AutoLight = {
     }
     const P = (hh, tot, p) => { let c = 0; const t = tot * p; for (let i = 0; i < 1024; i++) { c += hh[i]; if (c >= t) return i / 1023; } return 1; };
     const q = (p) => P(hist, n, p);
-    return { p005: q(0.005), p02: q(0.02), p05: q(0.05), p10: q(0.10), p25: q(0.25), p50: q(0.5), p75: q(0.75), p95: q(0.95), p99: q(0.99), p995: q(0.995), q, c50: P(histC, nc, 0.5), clip: clip / n, sat: sat / n, lav: l2s(Math.max(0, Math.exp(lg / n) - 0.004)) };
+    return { p005: q(0.005), p02: q(0.02), p05: q(0.05), p10: q(0.10), p25: q(0.25), p50: q(0.5), p75: q(0.75), p90: q(0.9), p95: q(0.95), p99: q(0.99), p995: q(0.995), q, c50: P(histC, nc, 0.5), clip: clip / n, sat: sat / n, lav: l2s(Math.max(0, Math.exp(lg / n) - 0.004)) };
   },
   render(ses, e) { return ses.renderThumb(effective(e), 256); },
   /* 回傳調好的六個光線參數（絕對值） */
@@ -7056,6 +7063,96 @@ const AutoLight = {
     const out = {}; for (const k of this.TONE) out[k] = e[k];
     out._info = { scene: highKey ? '高調' : night ? '夜景' : hdr ? '大光比' : '一般', it, before: s0, after: s };
     return out;
+  },
+  /* v1.19：大光比／過曝或過暗的照片 → 全域只做溫和的曝光，亮部、暗部交給兩個 AI 分區遮色片各自處理 */
+  solveZones(ses, edit, o = {}) {
+    const iso = o.iso || 100, isoF = iso >= 6400 ? 0.45 : iso >= 3200 ? 0.6 : iso >= 1600 ? 0.78 : iso >= 800 ? 0.9 : 1;
+    const e = normEdit(clone(edit)); for (const k of this.TONE) e[k] = 0; e.masks = (e.masks || []).filter((m) => !m.aiZone);
+    let s = this.stats(this.render(ses, e));
+    // 全域曝光：以對數平均（整體觀感）為準，小幅移動
+    for (let k = 0; k < 3; k++) { let d = clamp(Math.log2(s2l(0.4) / Math.max(s2l(s.lav), 1e-4)) * 0.6, -0.8, 0.8); if (d > 0 && s.clip > 0.08) d *= 0.3; if (Math.abs(d) < 0.05) break; e.exposure = clamp(Math.round((e.exposure + d) * 100) / 100, -1.5, 1.5); s = this.stats(this.render(ses, e)); }
+    // 大部分的壓亮／提暗交給「亮部／陰影」（不會有光暈），分區只做細部
+    s = this.stats(this.render(ses, e));
+    e.shadows = Math.round(clamp((0.2 - s.p25) * 260, 0, 45) * isoF + 10); e.highlights = -Math.round(clamp((s.p95 - 0.85) * 400, 15, 60));
+    const z = this.zones(ses, e, { isoF });
+    const out = {}; for (const k of this.TONE) out[k] = e[k];
+    out._masks = e.masks.filter((m) => m.aiZone); out._extra = { clarity: e.clarity, dehaze: e.dehaze };
+    out._info = { scene: '大光比（亮暗分區）', it: 0, before: s, after: z.after, zones: z };
+    return out;
+  },
+  /* 需不需要分區：亮的地方和暗的地方都有一定面積、而且差很多 */
+  needZones(ses, edit) {
+    const e = normEdit(clone(edit)); for (const k of this.TONE) e[k] = 0; e.masks = [];
+    const s = this.stats(this.render(ses, e));
+    this.lastNeed = s;
+    return (s.p95 - s.p05 > 0.55 && s.p90 > 0.55) || (s.p75 - s.p25 > 0.4) || s.clip > 0.01 || (s.p10 < 0.06 && s.p95 > 0.7);
+  },
+  /* ================= v1.19：AI 分區光線（大光比：亮部、暗部分開調） =================
+     Lightroom 的做法：先用一個「邊緣保留」的平滑亮度把畫面分成「亮區」（天空、雲、窗外）與「暗區」（逆光的人、樹蔭、室內），
+     兩區各自用遮色片調曝光／對比／清晰度／彩度，最後再把整張的黑點、白點、清晰度補回來 → 暗部提亮不發灰、亮部壓得下來顏色也正常。
+     兩個遮色片都會留在「遮色片」裡，名稱為「AI 亮部區」「AI 暗部區」，可以再手動微調。 */
+  baseMap(ses, e) {
+    const b = normEdit(clone(e)); for (const k of this.TONE) b[k] = 0; b.masks = []; b.clarity = 0; b.dehaze = 0;
+    const cv = this.render(ses, b), W = cv.width, H = cv.height, d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+    const L = new Float32Array(W * H); for (let i = 0; i < W * H; i++) L[i] = (0.2126 * d[i * 4] + 0.7152 * d[i * 4 + 1] + 0.0722 * d[i * 4 + 2]) / 255;
+    const sg = Math.max(W, H) * 0.009, r = Math.ceil(sg * 3), k = []; let ks = 0; for (let i = -r; i <= r; i++) { const v = Math.exp(-i * i / (2 * sg * sg)); k.push(v); ks += v; }
+    const T = new Float32Array(W * H), B = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let a = 0; for (let i = -r; i <= r; i++) a += L[y * W + Math.min(W - 1, Math.max(0, x + i))] * k[i + r]; T[y * W + x] = a / ks; }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let a = 0; for (let i = -r; i <= r; i++) a += T[Math.min(H - 1, Math.max(0, y + i)) * W + x] * k[i + r]; const lb = a / ks, dd = L[y * W + x] - lb; B[y * W + x] = lb + dd * (1 - Math.exp(-dd * dd / 0.004)); }
+    return { B, L, W, H };
+  },
+  zw(z, p, px) { const ss = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }; const lo = p.lo / 100, hi = p.hi / 100, sm = Math.max(p.sm / 100, 0.002); let w = ss(lo - sm, lo + sm * 0.25, z) * (1 - ss(hi - sm * 0.25, hi + sm, z)); if (px != null) { if (lo > 0.01) w *= ss(lo - 0.3, lo, px); if (hi < 0.99) w *= 1 - ss(hi, hi + 0.3, px); } return w; },
+  wstats(cv, w) {   // 加權統計（只看某一區）
+    const W = cv.width, H = cv.height, d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data, hist = new Float64Array(256); let n = 0, sat = 0;
+    for (let i = 0; i < W * H; i++) { const q = w[i]; if (q < 0.02) continue; const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2]; hist[Math.min(255, Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b))] += q; n += q; const mx = Math.max(r, g, b); sat += q * (mx ? (mx - Math.min(r, g, b)) / mx : 0); }
+    const P = (p) => { let c = 0; const t = n * p; for (let i = 0; i < 256; i++) { c += hist[i]; if (c >= t) return i / 255; } return 1; };
+    return { n, p05: P(0.05), p10: P(0.1), p25: P(0.25), p50: P(0.5), p75: P(0.75), p95: P(0.95), p99: P(0.99), sat: n ? sat / n : 0 };
+  },
+  zones(ses, e, o = {}) {
+    const isoF = o.isoF || 1, M = this.baseMap(ses, e), N = M.B.length;
+    // 用 Otsu 找出亮、暗兩群的分界
+    const hist = new Float64Array(256); for (const v of M.B) hist[Math.min(255, Math.max(0, Math.round(v * 255)))]++;
+    let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i]; let wB = 0, sB = 0, best = -1, th = 128;
+    for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = N - wB; if (!wF) break; sB += t * hist[t]; const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) * (mB - mF); if (v > best) { best = v; th = t; } }
+    const t = Math.min(0.72, Math.max(0.3, th / 255));
+    const pH = { lo: Math.round((t + 0.05) * 100), hi: 100, sm: 12 }, pS = { lo: 0, hi: Math.round((t - 0.05) * 100), sm: 12 };
+    const wH = new Float32Array(N), wS = new Float32Array(N); let fH = 0, fS = 0;
+    for (let i = 0; i < N; i++) { wH[i] = this.zw(M.B[i], pH, M.L[i]); wS[i] = this.zw(M.B[i], pS, M.L[i]); fH += wH[i]; fS += wS[i]; }
+    fH /= N; fS /= N;
+    const mk = (name, p) => ({ id: uid(), type: 'zone', aiZone: true, name, invert: false, amt: 100, on: true, p, adj: clone(DEF_MASK_ADJ) });
+    const mS = fS > 0.04 ? mk('AI 暗部區', pS) : null, mH = fH > 0.04 ? mk('AI 亮部區', pH) : null;
+    e.masks = (e.masks || []).filter((m) => !m.aiZone).concat([mS, mH].filter(Boolean));
+    const st = () => { const cv = this.render(ses, e); return { all: this.stats(cv), S: mS ? this.wstats(cv, wS) : null, H: mH ? this.wstats(cv, wH) : null }; };
+    const ev = (to, from) => Math.log2(s2l(to) / Math.max(s2l(from), 1e-4));
+    let s = st();
+    for (let k = 0; k < 4; k++) {
+      let moved = false;
+      if (mS) {   // 暗區：主體拉到看得清楚，但仍比亮區暗（保留光線方向感）
+        const tgt = Math.max(0.16, Math.min(0.3, (s.H ? s.H.p50 : 0.8) - 0.22)); let d = Math.max(-0.5, Math.min(0.6, ev(tgt, s.S.p50) * 0.8)); if (d < 0 && s.S.p50 < 0.42) d = 0;   // 暗區只會提亮（除非本來就很亮）
+        if (Math.abs(d) > 0.06) { mS.adj.exposure = Math.max(-0.6, Math.min(0.6 + 0.4 * isoF, Math.round((mS.adj.exposure + d) * 100) / 100)); moved = true; }
+      }
+      if (mH) {   // 亮區：天空、雲找回層次（最亮 5% 不超過 0.93，中間調不要太灰）
+        const d = s.H.p95 > 0.93 ? ev(0.93, s.H.p95) : s.H.p50 < 0.5 ? Math.min(0.3, ev(0.55, s.H.p50) * 0.4) : 0;   // 亮區主要是壓暗
+        if (Math.abs(d) > 0.06) { mH.adj.exposure = Math.max(-1, Math.min(0.4, Math.round((mH.adj.exposure + d * 0.9) * 100) / 100)); moved = true; }
+      }
+      if (!moved) break; s = st();
+    }
+    // 各區的層次與色彩：提亮越多 → 補越多對比、清晰度與彩度（避免發灰）
+    if (mS) { const lift = Math.max(0, mS.adj.exposure); Object.assign(mS.adj, { contrast: Math.round(10 + lift * 8), clarity: Math.round(Math.min(25, 12 + lift * 10) * (0.6 + 0.4 * isoF)), saturation: Math.round(Math.min(10, 2 + lift * 6)) }); }
+    if (mH) { const pull = Math.max(0, -mH.adj.exposure), flat = s.H.p75 - s.H.p25 < 0.12; Object.assign(mH.adj, { contrast: Math.round(10 + pull * 8 + (flat ? 8 : 0)), dehaze: Math.round(Math.min(30, 6 + pull * 10 + (flat ? 8 : 0))), highlights: -Math.round(Math.min(50, 20 + pull * 15)), saturation: Math.round(Math.min(10, 4 + pull * 4)) }); }
+    s = st();
+    // 整張：黑點、白點（「通透感」的來源）
+    for (let k = 0; k < 3; k++) {
+      const db = (0.025 - s.all.p005) * 300, dw = s.all.clip < 0.01 ? (0.965 - s.all.p995) * 120 : -(s.all.clip - 0.006) * 1500;
+      let moved = false;
+      if (Math.abs(db) > 2) { e.blacks = Math.round(clamp(e.blacks + db, -45, 10)); moved = true; }
+      if (Math.abs(dw) > 2) { e.whites = Math.round(clamp(e.whites + dw, -40, 30)); moved = true; }
+      if (!moved) break; s = st();
+    }
+    e.clarity = Math.max(e.clarity || 0, Math.round(10 * (0.6 + 0.4 * isoF)));
+    const hazy = s.all.p02 > 0.08 && s.all.p50 > 0.35; if (hazy) e.dehaze = Math.max(e.dehaze || 0, 8);
+    s = st();
+    return { t, fS, fH, after: s.all };
   },
   /* 色彩：用接近中性灰的像素估計色偏（暖色夕陽、晨光不算色偏） */
   wb(ses, edit) {
@@ -7547,7 +7644,7 @@ const Settings = {
 };
 
 /* ================= App ================= */
-const APP_VERSION = '1.18.1';
+const APP_VERSION = '1.19.0';
 const App = {
   view: 'lib', clip: null, userPresets: [],
   async init() {

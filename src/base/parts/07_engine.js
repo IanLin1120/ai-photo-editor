@@ -234,6 +234,7 @@ void main(){
 uniform sampler2D uC,uB,uT,uGuide,uBrush,uSky;uniform vec4 uBrushRect;uniform int uHasT;
 uniform int uMType,uInv;uniform float uMAmt;uniform vec4 uMP1,uMP2;uniform vec2 uSAsp;uniform vec3 uAtm;
 uniform vec4 uMA1,uMA2,uMA3;uniform int uViz;
+float gZB,gZP; // v1.19：亮度區域（AI 分區）用的「邊緣保留底層亮度」
 float maskW(vec2 pn,vec3 pc){
   vec2 s=outToSrc(pn);vec2 q=s*uSAsp;float w=0.0;
   if(uMType==1){vec2 a=uMP1.xy*uSAsp,b=uMP1.zw*uSAsp;float t=dot(q-a,b-a)/max(dot(b-a,b-a),1e-8);w=1.0-smoothstep(0.0,1.0,clamp(t,0.0,1.0));}
@@ -244,10 +245,13 @@ float maskW(vec2 pn,vec3 pc){
   else if(uMType==6){vec3 a=rgb2hsv(clamp(pc,0.0,1.0)),b=rgb2hsv(clamp(uMP1.rgb,0.0,1.0));float dh=abs(a.x-b.x);dh=min(dh,1.0-dh);
     float d=dh*2.6*min(a.y,b.y)*2.0+abs(a.y-b.y)*0.7+abs(a.z-b.z)*0.45;w=1.0-smoothstep(uMP1.a,uMP1.a+0.12,d);}
   else if(uMType==7){w=1.0;}
+  else if(uMType==8){float sm=max(uMP1.z,0.002);w=smoothstep(uMP1.x-sm,uMP1.x+sm*0.25,gZB)*(1.0-smoothstep(uMP1.y-sm*0.25,uMP1.y+sm,gZB));
+    /* 像素本身也要在範圍附近（邊緣旁的天空不會被當成暗區提亮 → 沒有光暈） */ if(uMP1.x>0.01)w*=smoothstep(uMP1.x-0.3,uMP1.x,gZP);if(uMP1.y<0.99)w*=1.0-smoothstep(uMP1.y,uMP1.y+0.3,gZP);}
   if(uInv==1)w=1.0-w;return clamp(w,0.0,1.0)*uMAmt;
 }
 void main(){
   vec2 tc=TC();vec2 pn=PN();vec4 C=texture(uC,tc);if(C.a==0.0){o=uViz==1?vec4(0.0):C;return;}
+  if(uMType==8){float Lp=l2s1(max(dot(texture(uB,tc).rgb,LUMA),1e-6));float Lg=texture(uGuide,pn).g;float d=Lp-Lg;gZB=Lg+d*(1.0-exp(-d*d/0.004));gZP=Lp;}
   float w=maskW(pn,C.rgb);
   if(uViz==1){o=vec4(w,w,w,1.0);return;}
   if(w<0.001){o=C;return;}
@@ -604,7 +608,7 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
     }
   }
   function clamp01x(v) { return Math.max(0, Math.min(2, v)); }
-  const MT = { linear: 1, radial: 2, brush: 3, sky: 4, lum: 5, color: 6, all: 7 };
+  const MT = { linear: 1, radial: 2, brush: 3, sky: 4, lum: 5, color: 6, all: 7, zone: 8 };
   function setMaskUniforms(m, job, G) {
     set('uMType', MT[m.type] || 7); set('uInv', m.invert ? 1 : 0); set('uMAmt', (m.amt == null ? 100 : m.amt) / 100);
     const L = Math.max(G.SW, G.SH); set('uSAsp', [G.SW / L, G.SH / L]);
@@ -612,7 +616,7 @@ uniform sampler2D uIn;void main(){vec4 c=texture(uIn,TC());vec3 p=l2s(c.rgb);o=v
     if (m.type === 'linear') set('uMP1', [p.ax, p.ay, p.bx, p.by]);
     else if (m.type === 'radial') { set('uMP1', [p.cx, p.cy, p.rx, p.ry]); set('uMP2', [p.ang || 0, (p.feather == null ? 50 : p.feather) / 100, 0, 0]); }
     else if (m.type === 'sky') set('uMP1', [job.skyLmin || 0.3, 0, 0, 0]);
-    else if (m.type === 'lum') set('uMP1', [p.lo / 100, p.hi / 100, p.sm / 100, 0]);
+    else if (m.type === 'lum' || m.type === 'zone') set('uMP1', [p.lo / 100, p.hi / 100, p.sm / 100, 0]);
     else if (m.type === 'color') set('uMP1', [p.r, p.g, p.b, (p.range == null ? 30 : p.range) / 100 * 0.6]);
     if (m.type === 'brush') { const b = job.brush && job.brush[m.id]; set('uBrush', b ? b.tex : null); set('uBrushRect', b ? b.rect : [0, 0, 1, 1]); }
     else set('uBrush', null);
