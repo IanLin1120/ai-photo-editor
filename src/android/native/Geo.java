@@ -10,6 +10,10 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.provider.Settings;
 import android.provider.MediaStore;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import java.util.ArrayList;
 import android.database.Cursor;
 import android.content.ContentUris;
 import android.content.pm.ResolveInfo;
@@ -191,6 +195,42 @@ public class Geo {
                 a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(it); } catch (Throwable t) { a.js("window.toast&&toast('無法開啟該 App')"); } } });
                 JSONObject o = new JSONObject(); o.put("ok", true); o.put("src", u.toString()); o.put("t0", editT0); o.put("mod", editMod); o.put("mime", mime); return o.toString();
             } catch (Throwable t) { return "{\"ok\":false,\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
+        }
+        /* v1.20：橫幅通知（會浮在 Lightroom 等其他 App 的畫面上方），點一下回到這個 App */
+        @JavascriptInterface public void alert(String title, String text) {
+            final MainActivity a = act; if (a == null) return;
+            try {
+                NotificationManager nm = (NotificationManager) a.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (Build.VERSION.SDK_INT >= 26) { NotificationChannel ch = new NotificationChannel("aiphoto_alert", "修圖流程提醒", NotificationManager.IMPORTANCE_HIGH); ch.enableVibration(true); ch.setVibrationPattern(new long[] { 0, 120, 80, 120 }); nm.createNotificationChannel(ch); }
+                Intent i = new Intent(a, MainActivity.class); i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                PendingIntent pi = PendingIntent.getActivity(a, 7701, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(a, "aiphoto_alert") : new Notification.Builder(a);
+                b.setSmallIcon(a.getApplicationInfo().icon).setContentTitle(title).setContentText(text).setAutoCancel(true).setContentIntent(pi)
+                 .setCategory(Notification.CATEGORY_REMINDER).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_VIBRATE)
+                 .addAction(new Notification.Action.Builder(null, "繼續修圖", pi).build());
+                nm.notify(7701, b.build());
+            } catch (Throwable t) { }
+        }
+        @JavascriptInterface public void alertSettings() {
+            final MainActivity a = act; if (a == null) return;
+            a.runOnUiThread(new Runnable() { public void run() { try {
+                Intent i = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS); i.putExtra(Settings.EXTRA_APP_PACKAGE, a.getPackageName()); i.putExtra(Settings.EXTRA_CHANNEL_ID, "aiphoto_alert"); a.startActivity(i);
+            } catch (Throwable t) { try { Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS); i.putExtra(Settings.EXTRA_APP_PACKAGE, a.getPackageName()); a.startActivity(i); } catch (Throwable t2) { } } } });
+        }
+        @JavascriptInterface public void alertClear() { try { ((NotificationManager) act.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(7701); } catch (Throwable t) { } }
+        /* v1.20：刪除相簿裡其他 App 存的相片（Lightroom 副本、手機相簿另存的那張）— 系統會在這個 App 裡跳出一次確認 */
+        @JavascriptInterface public boolean deleteMedia(String json) {
+            final MainActivity a = act; if (a == null) return false;
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(json); final ArrayList<Uri> L = new ArrayList<Uri>();
+                for (int k = 0; k < arr.length(); k++) L.add(Uri.parse(arr.getString(k)));
+                if (L.isEmpty()) return false;
+                if (Build.VERSION.SDK_INT >= 30) {
+                    final PendingIntent pi = MediaStore.createDeleteRequest(a.getContentResolver(), L);
+                    a.runOnUiThread(new Runnable() { public void run() { try { a.startIntentSenderForResult(pi.getIntentSender(), 7781, null, 0, 0, 0); } catch (Throwable t) { a.js("window.toast&&toast('無法刪除：" + "'+'" + "')"); } } });
+                } else { for (Uri u : L) { try { a.getContentResolver().delete(u, null, null); } catch (Throwable t) { } } }
+                return true;
+            } catch (Throwable t) { return false; }
         }
         @JavascriptInterface public boolean hasApp(String pkg) { try { return act != null && act.getPackageManager().getLaunchIntentForPackage(pkg) != null; } catch (Throwable t) { return false; } }
         /* v1.18.1：App 在背景被系統關掉再開時，原本記在記憶體裡的資料會不見 → 由網頁把記錄傳回來 */

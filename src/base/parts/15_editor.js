@@ -457,6 +457,8 @@ const Editor = {
       h('div', { class: 'sub' }, '修完儲存後回到這裡，結果會自動套用到這張，相片名稱不變；「還原原圖」可回到修之前。'),
       h('div', { class: 'acts' }, h('button', { class: 'btn pri', onclick: () => this.lrEdit(true) }, '🅻 Lightroom → 📱 手機相簿'),
         h('button', { class: 'btn sm', onclick: () => this.lrEdit() }, '🅻 只用 Lightroom'), h('button', { class: 'btn sm', onclick: () => this.extEdit() }, '📱 只用手機相簿')),
+      window.AIP2 && AIP2.alertSettings ? h('div', { class: 'sub' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); AIP2.alertSettings(); } }, 'Lightroom 存好副本時沒有跳出橫幅通知？點這裡開啟「修圖流程提醒」的橫幅／浮動通知'),
+        CFG.extDel === 'always' ? h('span', null, '・', h('a', { href: '#', onclick: (e) => { e.preventDefault(); CFG.extDel = ''; saveCfg(); this.renderPanel(); toast('之後會先詢問再刪除副本'); } }, '刪副本前先詢問')) : null) : null,
       mine ? h('div', { class: 'acts' }, h('span', { class: 'sub grow' }, '⏳ ' + st), h('button', { class: 'btn sm', onclick: () => this.extBack(true) }, '立即檢查'), h('button', { class: 'btn sm', onclick: () => { this.extDone(); try { AIP2.editCleanup(); } catch (e) {} this.renderPanel(); } }, '取消')) : null);
   },
   p_auto(b) {
@@ -1117,9 +1119,20 @@ const Editor = {
       if (!document.hidden || Q.found) return;
       try {
         const r = JSON.parse((AIP2.editResult3 ? AIP2.editResult3(Q.src || '', Q.t0 || 0, Q.mod || 0, false) : AIP2.editResult()) || '{}');
-        if (r.state === 'new') { Q.found = r; this.extPend = Q; lsSet('aip.extPend', Q); clearInterval(this.extWT); NAT.call('notifyDone', '已偵測到 Lightroom 副本', '點這裡繼續用手機相簿修圖（' + (r.name || '') + '）'); BG.set('ext', '已偵測到 Lightroom 副本，點通知繼續'); }
+        if (r.state === 'new') { Q.found = r; this.extPend = Q; lsSet('aip.extPend', Q); clearInterval(this.extWT);
+          // v1.20：橫幅通知會直接浮在 Lightroom 畫面上，點一下就回來並自動切到手機相簿
+          if (AIP2.alert) AIP2.alert('✓ Lightroom 副本已儲存', '點這裡繼續用手機相簿修圖'); else NAT.call('notifyDone', '已偵測到 Lightroom 副本', '點這裡繼續用手機相簿修圖（' + (r.name || '') + '）');
+          BG.set('ext', '已偵測到 Lightroom 副本，點通知繼續'); }
       } catch (e) {}
     }, 3000);
+  },
+  extAskDelete(list) {
+    const names = list.map((x) => '「' + (x.name || '相片') + '」').join('、');
+    if (!(window.AIP2 && AIP2.deleteMedia)) { toast('相簿裡另外存了' + names + '，不需要的話可以到相簿刪除', 6000); return; }
+    const del = () => { if (AIP2.deleteMedia(JSON.stringify(list.map((x) => x.uri)))) toast('請在系統視窗按「允許」完成刪除', 3000); };
+    if (CFG.extDel === 'always') { del(); return; }
+    Upd.dialog('刪除相簿裡多出來的照片？', `修好的照片已經帶入這裡了。手機相簿裡還有 ${names}（修圖時另外存的副本），要刪掉嗎？<br><small>原始照片不會被刪除。系統會再跳出一次確認。</small>`,
+      [['🗑 刪除', del], ['以後都直接刪除', () => { CFG.extDel = 'always'; saveCfg(); del(); }], ['保留', null]]);
   },
   extDone() { clearInterval(this.extWT); this.extPend = null; lsSet('aip.extPend', null); BG.end('ext'); },
   /* 回到 App 時自動找編輯結果（相簿存檔可能慢幾秒，會重試幾次） */
@@ -1134,6 +1147,7 @@ const Editor = {
         if (r.state === 'new' || r.state === 'same') break; await sleep(2000);
       }
       if (P.found && (r.state !== 'new' && r.state !== 'same')) r = P.found;
+      try { AIP2.alertClear && AIP2.alertClear(); } catch (e) {}
       if (r.state !== 'new' && r.state !== 'same') {
         Upd.dialog('還沒有找到編輯後的相片', (P.mode === 'lr' ? '在 Lightroom 修好後，請按「分享 → 匯出為…」或「儲存到裝置」存成 JPG，再回到這裡就會自動取回；' : '如果還在手機相簿裡編輯，完成並儲存後再回來就會自動取回；') + '也可以按「再檢查一次」。' + (r.err ? '<br><small>' + Upd.esc(r.err) + '</small>' : ''), [['再檢查一次', () => this.extBack(true)], ['不要了', () => { this.extDone(); try { AIP2.editCleanup(); } catch (e) {} }], ['稍後', null]]);
         return;
@@ -1146,7 +1160,7 @@ const Editor = {
         const base = ((await DB.get('photos', P.id)) || {}).name || 'photo';
         await Exporter.save(base.replace(/\.[^.]+$/, '') + '_手機相簿編輯中.jpg', 'image/jpeg', new Uint8Array(await b.arrayBuffer()));
         const o = JSON.parse(AIP2.editLast('') || '{}'); if (!o.ok) throw new Error(o.err || '無法開啟手機相簿');
-        this.extPend = { id: P.id, t: Date.now(), src: o.src || '', t0: o.t0 || 0, mod: o.mod || 0, temp: true, mode: 'chain2', lrName: r.name || '' }; lsSet('aip.extPend', this.extPend); this.extWatch();
+        this.extPend = { id: P.id, t: Date.now(), src: o.src || '', t0: o.t0 || 0, mod: o.mod || 0, temp: true, mode: 'chain2', lrName: r.name || '', lrUri: r.uri || '' }; lsSet('aip.extPend', this.extPend); this.extWatch();
         this.busy(null); toast('已取得 Lightroom 副本，切換到手機相簿：用「AI 圖像助理」修好後儲存，再回到這個 App 就會自動帶入', 6000);
         return;
       }
@@ -1162,7 +1176,9 @@ const Editor = {
       DB.del('ai', 'extSent:' + P.id).catch(() => {});
       try { AIP2.editCleanup(); } catch (e) {}
       this.busy(null);
-      if (r.state === 'new' || P.lrName) toast('相簿裡另外存了' + [P.lrName, r.state === 'new' ? r.name : ''].filter(Boolean).map((x) => '「' + x + '」').join('、') + '，不需要的話可以到相簿刪除', 6000);
+      // v1.20：相簿裡多出來的副本（Lightroom 副本、手機相簿另存的那張）可以直接在這裡刪掉，不用切到相簿
+      const extra = [P.lrUri ? { uri: P.lrUri, name: P.lrName } : null, r.state === 'new' && r.uri ? { uri: r.uri, name: r.name } : null].filter((x) => x && x.uri);
+      if (extra.length) this.extAskDelete(extra);
     } catch (e) { this.busy(null); console.error(e); toast('取回編輯結果失敗：' + e.message, 5000); }
     finally { this.extBusy = false; }
   },

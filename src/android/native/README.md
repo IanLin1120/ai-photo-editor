@@ -14,3 +14,5 @@ v1.17.0：`MainActivity.onDestroy()` 開頭加入 `Geo.onDestroy(this)`：App �
 v1.18.0：`AIP2.editLast()`／`editResult()`／`editCleanup()`：把剛存的暫存 JPEG 用手機內建相簿（優先 OPPO／ColorOS 相簿）的編輯器開啟，回到 App 後找出編輯結果（另存的新相片或覆寫的原檔）交給網頁取回。Manifest 加入 `<queries>`（ACTION_EDIT image/*）。
 
 v1.19.2：`AIP2.openWith(uri, pkg, mode)`（分享或編輯到指定 App，例如 Lightroom）、`hasApp(pkg)`、`editResult3`；原始檔（非 App 暫存）絕不刪除。Manifest `<queries>` 加入 SEND image/* 與 com.adobe.lrmobile。
+
+v1.20.0：`AIP2.alert(title,text)`（高優先通知頻道 aiphoto_alert，會以橫幅浮在其他 App 上）、`alertClear()`、`alertSettings()`；`deleteMedia(json)` 以 MediaStore.createDeleteRequest 刪除其他 App 存的副本（系統確認）。
