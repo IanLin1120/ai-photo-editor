@@ -1,0 +1,63 @@
+{
+ "nproc": 4,
+ "mem": "MemTotal:       16373448 kB",
+ "spaces": [
+  [
+   "theSure/Omnieraser",
+   "RUNTIME_ERROR",
+   "None"
+  ],
+  [
+   "iosca/Omnieraser",
+   "BUILD_ERROR",
+   "None"
+  ],
+  [
+   "sfpaul/Omnieraser",
+   "BUILD_ERROR",
+   "None"
+  ],
+  [
+   "theSure/Omnieraser",
+   "RUNTIME_ERROR",
+   "None"
+  ],
+  [
+   "iosca/Omnieraser",
+   "BUILD_ERROR",
+   "None"
+  ],
+  [
+   "sfpaul/Omnieraser",
+   "BUILD_ERROR",
+   "None"
+  ],
+  [
+   "jixin0101/ObjectClear",
+   "RUNNING",
+   "zero-a10g"
+  ],
+  [
+   "svjack/ObjectClear",
+   "SLEEPING",
+   "None"
+  ],
+  [
+   "joycemelvin/ObjectClear",
+   "PAUSED",
+   "None"
+  ],
+  [
+   "John2121/ObjectClear",
+   "CONFIG_ERROR",
+   "None"
+  ],
+  [
+   "WannaBai/ObjectClear",
+   "BUILD_ERROR",
+   "None"
+  ]
+ ],
+ "omni_try": [],
+ "omni_err": "Traceback (most recent call last):\n  File \"/home/runner/work/ai-photo-editor/ai-photo-editor/bench.py\", line 23, in <module>\n    if not ok: raise RuntimeError('no running omnieraser space')\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nRuntimeError: no running omnieraser space\n"
+}

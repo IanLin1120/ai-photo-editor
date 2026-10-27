@@ -1,0 +1,5 @@
+diffusers              0.42.0
+gradio_client          2.7.2
+torch                  2.14.1+cpu
+torchvision            0.29.1+cpu
+transformers           5.21.0
