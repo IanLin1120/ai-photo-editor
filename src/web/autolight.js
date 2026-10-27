@@ -13,7 +13,8 @@ const AutoLight = {
       const i = (y * W + x) * 4, r = d[i], g = d[i + 1], b = d[i + 2], L = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
       const k = Math.min(1023, (L * 1023) | 0); hist[k]++; n++; lg += Math.log(s2l(L) + 0.004);
       const dx = (x / W - 0.5) / 0.5, dy = (y / H - 0.55) / 0.5, wc = Math.max(0, 1 - (dx * dx + dy * dy) * 0.7); histC[k] += wc; nc += wc;   // 中央加權（主體多半在中間偏下）
-      const mx = Math.max(r, g, b), mn = Math.min(r, g, b); if (mx >= 245) clip++;   // RAW 感光元件飽和處畫成約 249（不是 255），也算過曝 sat += mx ? (mx - mn) / mx : 0;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b); if (mx >= 245) clip++;   // RAW 感光元件飽和處畫成約 249（不是 255），也算過曝
+      sat += mx ? (mx - mn) / mx : 0;   // v1.19.1：這行之前被註解吃掉了，彩度一直量成 0
     }
     const P = (hh, tot, p) => { let c = 0; const t = tot * p; for (let i = 0; i < 1024; i++) { c += hh[i]; if (c >= t) return i / 1023; } return 1; };
     const q = (p) => P(hist, n, p);
@@ -28,12 +29,12 @@ const AutoLight = {
     // 場景判斷：霧／雪／高調（整體亮而且層次少）保留明亮；夜景／低調保留暗；其餘把主體拉到中間調
     const spread = s0.p95 - s0.p05, highKey = s0.p50 > 0.58 && spread < 0.45, night = s0.p50 < 0.1 && s0.p99 > 0.6;
     const subj = 0.6 * s0.c50 + 0.4 * s0.p50;
-    const tm = highKey ? Math.max(0.6, Math.min(0.72, subj)) : night ? clamp(subj * 1.6, 0.16, 0.3) : 0.45;
+    const tm = highKey ? Math.max(0.6, Math.min(0.72, subj)) : night ? clamp(subj * 1.6, 0.16, 0.3) : clamp(subj, 0.42, 0.56);   // v1.19.1：曝光正常的照片不再硬拉到 0.45（以前會變暗變灰）
     const shT = (night ? 0.05 : 0.10) * (0.6 + 0.4 * isoF), hiT = highKey ? 0.965 : 0.94;
     let s = s0, it = 0; const R = () => { it++; return (s = this.stats(this.render(ses, e))); };
     // 大光比（逆光、強烈明暗）：中間調用對數平均判斷，曝光只小幅移動，主要交給亮部／陰影處理（和 Lightroom 一樣）
     const hdr = s0.p95 - s0.p05 > 0.7 || (s0.p75 - s0.p25 > 0.5);
-    const mid = (x) => hdr ? x.lav : 0.5 * x.p50 + 0.5 * x.c50, tmE = hdr ? 0.36 : tm, evLim = hdr ? 0.5 : 3;
+    const mid = (x) => hdr ? x.lav : 0.5 * x.p50 + 0.5 * x.c50, tmE = hdr ? clamp(s0.lav, 0.36, 0.5) : tm, evLim = hdr ? 0.5 : 3;
     // ① 曝光：只用曝光把中間調（整體＋中央主體）帶到目標；同時限制：最亮處若已大面積死白就不再加亮
     for (let k = 0; k < 4; k++) {
       let dEv = clamp(Math.log2(s2l(tmE) / Math.max(s2l(mid(s)), 1e-4)) * 0.9, -1.2, 1.2);
@@ -46,7 +47,7 @@ const AutoLight = {
     // RAW 裡已經完全過曝（三色都到感光元件上限）的區域沒有資料可救，不拿它來判斷，以免為了它把其他亮部全部壓灰
     const cb = Math.min(0.2, s0.clip), pH = Math.max(0.5, 0.99 - cb);
     for (let k = 0; k < 4; k++) {
-      const over = Math.max(0, s.q(pH) - hiT) * 300 + Math.max(0, s.clip - cb - 0.003) * 3500; if (over < 2 || e.highlights <= -100) break;
+      const over = Math.max(0, s.q(pH) - hiT) * 300 + Math.max(0, s.clip - cb - 0.003) * 3500 + (highKey ? 0 : Math.max(0, s.p90 - 0.82) * 260); if (over < 2 || e.highlights <= -100) break;
       e.highlights = Math.round(clamp(e.highlights - over, -100, 0)); R();
     }
     // ③ 陰影：最暗 10% 要看得見細節（依 ISO 節制）
@@ -58,14 +59,15 @@ const AutoLight = {
     // ④ 曝光微調（亮部、陰影調整後中間調若偏離太多），幅度限制在 ±0.3 EV 內，不和陰影互相抵消
     { let dEv = clamp(Math.log2(s2l(tmE) / Math.max(s2l(mid(s)), 1e-4)) * 0.5, -0.3, 0.3); if (hdr || s.p10 < shT * 0.9) dEv = Math.max(dEv, 0); if (Math.abs(dEv) > 0.05) { e.exposure = clamp(Math.round((ev0 + dEv) * 100) / 100, -evLim - 0.3, evLim + 0.3); R(); } }
     // ⑤ 白色／黑色：補足明暗範圍；霧、逆光柔光場景黑色不壓太重
-    const wT = highKey ? 0.985 : 0.965;
-    if (s.clip < 0.004 + cb && s.q(Math.max(0.5, 0.995 - cb)) < wT - 0.02 && cb < 0.004) e.whites = Math.round(clamp((wT - s.p995) * 110, 0, 35));
+    const wT = highKey ? 0.975 : 0.94;
+    const pW = s.q(Math.max(0.5, 0.99 - cb));
+    if (s.clip < 0.004 + cb && pW < wT - 0.02) e.whites = Math.round(clamp((wT - pW) * 140, 0, 40));   // 亮部壓下來後把最亮的地方補回白（不發灰）
     else if (s.clip > cb + 0.008) e.whites = Math.round(clamp(-(s.clip - cb - 0.004) * 2500, -40, 0));
     const hazy = s.p02 > 0.12 && !night, bT = night ? 0.012 : 0.022;
     e.blacks = Math.round(clamp((bT - s.p005) * 260, hazy ? -22 : -40, 12));
     R();
     // 對比：拉陰影壓亮部後若太平，補一點中間調對比（不影響已救回的兩端）
-    const spr = s.p75 - s.p25; if (!highKey && spr < 0.22) e.contrast = clamp(Math.round((0.22 - spr) * 120), 0, 18);
+    R(); const spr = s.p75 - s.p25; if (!highKey && spr < 0.3) { e.contrast = clamp(Math.round((0.3 - spr) * 150), 0, 25); R(); }
     const out = {}; for (const k of this.TONE) out[k] = e[k];
     out._info = { scene: highKey ? '高調' : night ? '夜景' : hdr ? '大光比' : '一般', it, before: s0, after: s };
     return out;
@@ -76,7 +78,7 @@ const AutoLight = {
     const e = normEdit(clone(edit)); for (const k of this.TONE) e[k] = 0; e.masks = (e.masks || []).filter((m) => !m.aiZone);
     let s = this.stats(this.render(ses, e));
     // 全域曝光：以對數平均（整體觀感）為準，小幅移動
-    for (let k = 0; k < 3; k++) { let d = clamp(Math.log2(s2l(0.4) / Math.max(s2l(s.lav), 1e-4)) * 0.6, -0.8, 0.8); if (d > 0 && s.clip > 0.08) d *= 0.3; if (Math.abs(d) < 0.05) break; e.exposure = clamp(Math.round((e.exposure + d) * 100) / 100, -1.5, 1.5); s = this.stats(this.render(ses, e)); }
+    const lt = clamp(s.lav, 0.36, 0.48); for (let k = 0; k < 3; k++) { let d = clamp(Math.log2(s2l(lt) / Math.max(s2l(s.lav), 1e-4)) * 0.6, -0.8, 0.8); if (d > 0 && s.clip > 0.08) d *= 0.3; if (Math.abs(d) < 0.05) break; e.exposure = clamp(Math.round((e.exposure + d) * 100) / 100, -1.5, 1.5); s = this.stats(this.render(ses, e)); }
     // 大部分的壓亮／提暗交給「亮部／陰影」（不會有光暈），分區只做細部
     s = this.stats(this.render(ses, e));
     e.shadows = Math.round(clamp((0.2 - s.p25) * 260, 0, 45) * isoF + 10); e.highlights = -Math.round(clamp((s.p95 - 0.85) * 400, 15, 60));
@@ -91,7 +93,7 @@ const AutoLight = {
     const e = normEdit(clone(edit)); for (const k of this.TONE) e[k] = 0; e.masks = [];
     const s = this.stats(this.render(ses, e));
     this.lastNeed = s;
-    return (s.p95 - s.p05 > 0.55 && s.p90 > 0.55) || (s.p75 - s.p25 > 0.4) || s.clip > 0.01 || (s.p10 < 0.06 && s.p95 > 0.7);
+    return (s.p95 - s.p05 > 0.62 && s.p10 < 0.1 && s.p90 > 0.6) || (s.p75 - s.p25 > 0.5) || (s.clip > 0.03 && s.p25 < 0.12) || (s.p10 < 0.05 && s.p95 > 0.75);
   },
   /* ================= v1.19：AI 分區光線（大光比：亮部、暗部分開調） =================
      Lightroom 的做法：先用一個「邊緣保留」的平滑亮度把畫面分成「亮區」（天空、雲、窗外）與「暗區」（逆光的人、樹蔭、室內），
@@ -109,10 +111,10 @@ const AutoLight = {
   },
   zw(z, p, px) { const ss = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }; const lo = p.lo / 100, hi = p.hi / 100, sm = Math.max(p.sm / 100, 0.002); let w = ss(lo - sm, lo + sm * 0.25, z) * (1 - ss(hi - sm * 0.25, hi + sm, z)); if (px != null) { if (lo > 0.01) w *= ss(lo - 0.3, lo, px); if (hi < 0.99) w *= 1 - ss(hi, hi + 0.3, px); } return w; },
   wstats(cv, w) {   // 加權統計（只看某一區）
-    const W = cv.width, H = cv.height, d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data, hist = new Float64Array(256); let n = 0, sat = 0;
-    for (let i = 0; i < W * H; i++) { const q = w[i]; if (q < 0.02) continue; const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2]; hist[Math.min(255, Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b))] += q; n += q; const mx = Math.max(r, g, b); sat += q * (mx ? (mx - Math.min(r, g, b)) / mx : 0); }
+    const W = cv.width, H = cv.height, d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data, hist = new Float64Array(256); let n = 0, sat = 0, mr = 0, mb = 0;
+    for (let i = 0; i < W * H; i++) { const q = w[i]; if (q < 0.02) continue; const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2]; hist[Math.min(255, Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b))] += q; n += q; mr += q * r; mb += q * b; const mx = Math.max(r, g, b); sat += q * (mx ? (mx - Math.min(r, g, b)) / mx : 0); }
     const P = (p) => { let c = 0; const t = n * p; for (let i = 0; i < 256; i++) { c += hist[i]; if (c >= t) return i / 255; } return 1; };
-    return { n, p05: P(0.05), p10: P(0.1), p25: P(0.25), p50: P(0.5), p75: P(0.75), p95: P(0.95), p99: P(0.99), sat: n ? sat / n : 0 };
+    return { n, p05: P(0.05), p10: P(0.1), p25: P(0.25), p50: P(0.5), p75: P(0.75), p95: P(0.95), p99: P(0.99), sat: n ? sat / n : 0, rb: mb > 0 ? mr / mb : 1 };
   },
   zones(ses, e, o = {}) {
     const isoF = o.isoF || 1, M = this.baseMap(ses, e), N = M.B.length;
@@ -130,7 +132,7 @@ const AutoLight = {
     e.masks = (e.masks || []).filter((m) => !m.aiZone).concat([mS, mH].filter(Boolean));
     const st = () => { const cv = this.render(ses, e); return { all: this.stats(cv), S: mS ? this.wstats(cv, wS) : null, H: mH ? this.wstats(cv, wH) : null }; };
     const ev = (to, from) => Math.log2(s2l(to) / Math.max(s2l(from), 1e-4));
-    let s = st();
+    let s = st(); const s0z = s;
     for (let k = 0; k < 4; k++) {
       let moved = false;
       if (mS) {   // 暗區：主體拉到看得清楚，但仍比亮區暗（保留光線方向感）
@@ -138,27 +140,41 @@ const AutoLight = {
         if (Math.abs(d) > 0.06) { mS.adj.exposure = Math.max(-0.6, Math.min(0.6 + 0.4 * isoF, Math.round((mS.adj.exposure + d) * 100) / 100)); moved = true; }
       }
       if (mH) {   // 亮區：天空、雲找回層次（最亮 5% 不超過 0.93，中間調不要太灰）
-        const d = s.H.p95 > 0.93 ? ev(0.93, s.H.p95) : s.H.p50 < 0.5 ? Math.min(0.3, ev(0.55, s.H.p50) * 0.4) : 0;   // 亮區主要是壓暗
+        const d = s.H.p95 > 0.93 ? ev(0.93, s.H.p95) : s.H.p50 > 0.8 ? ev(0.74, s.H.p50) : s.H.p50 < 0.5 ? Math.min(0.3, ev(0.55, s.H.p50) * 0.4) : 0;   // 亮區主要是壓暗；大片很亮的天空拉回有層次
         if (Math.abs(d) > 0.06) { mH.adj.exposure = Math.max(-1, Math.min(0.4, Math.round((mH.adj.exposure + d * 0.9) * 100) / 100)); moved = true; }
       }
       if (!moved) break; s = st();
     }
     // 各區的層次與色彩：提亮越多 → 補越多對比、清晰度與彩度（避免發灰）
     if (mS) { const lift = Math.max(0, mS.adj.exposure); Object.assign(mS.adj, { contrast: Math.round(10 + lift * 8), clarity: Math.round(Math.min(25, 12 + lift * 10) * (0.6 + 0.4 * isoF)), saturation: Math.round(Math.min(10, 2 + lift * 6)) }); }
-    if (mH) { const pull = Math.max(0, -mH.adj.exposure), flat = s.H.p75 - s.H.p25 < 0.12; Object.assign(mH.adj, { contrast: Math.round(10 + pull * 8 + (flat ? 8 : 0)), dehaze: Math.round(Math.min(30, 6 + pull * 10 + (flat ? 8 : 0))), highlights: -Math.round(Math.min(50, 20 + pull * 15)), saturation: Math.round(Math.min(10, 4 + pull * 4)) }); }
+    if (mH) { const pull = Math.max(0, -mH.adj.exposure), flat = s.H.p75 - s.H.p25 < 0.12; Object.assign(mH.adj, { contrast: Math.round(10 + pull * 8 + (flat ? 6 : 0)), dehaze: Math.round(Math.min(10, 4 + pull * 6)), highlights: -Math.round(Math.min(45, 15 + pull * 15)), whites: Math.round(Math.min(25, 8 + pull * 20)), saturation: Math.round(Math.min(10, 4 + pull * 4)) });
+      // 亮區（多半是天空、雲）調完不能偏黃偏灰：和原本的色調比較，偏暖就用色溫拉回
+      const rb0 = s0z.H.rb, s1 = st(); if (s1.H && s1.H.rb > rb0 * 1.02) mH.adj.temp = -Math.round(clamp((s1.H.rb / rb0 - 1) * 260, 0, 25)); }
     s = st();
     // 整張：黑點、白點（「通透感」的來源）
     for (let k = 0; k < 3; k++) {
-      const db = (0.025 - s.all.p005) * 300, dw = s.all.clip < 0.01 ? (0.965 - s.all.p995) * 120 : -(s.all.clip - 0.006) * 1500;
+      const db = (0.025 - s.all.p005) * 300, dw = s.all.clip < 0.012 ? (0.94 - s.all.p99) * 140 : -(s.all.clip - 0.008) * 1500;
       let moved = false;
       if (Math.abs(db) > 2) { e.blacks = Math.round(clamp(e.blacks + db, -45, 10)); moved = true; }
-      if (Math.abs(dw) > 2) { e.whites = Math.round(clamp(e.whites + dw, -40, 30)); moved = true; }
+      if (Math.abs(dw) > 2) { e.whites = Math.round(clamp(e.whites + dw, -40, 45)); moved = true; }
       if (!moved) break; s = st();
     }
     e.clarity = Math.max(e.clarity || 0, Math.round(10 * (0.6 + 0.4 * isoF)));
     const hazy = s.all.p02 > 0.08 && s.all.p50 > 0.35; if (hazy) e.dehaze = Math.max(e.dehaze || 0, 8);
     s = st();
     return { t, fS, fH, after: s.all };
+  },
+  /* v1.19.1：鮮豔度／飽和度 — 依照片原本的彩度補到自然飽滿（Lightroom 的 Adobe 色彩設定檔本身就比較鮮豔，RAW 原始色比較淡） */
+  color(ses, edit) {
+    const e = normEdit(clone(edit)); const s0 = this.stats(this.render(ses, e));
+    const tgt = clamp(s0.sat * 1.7 + 0.03, 0.3, 0.55); let s = s0;
+    for (let k = 0; k < 3; k++) {
+      const d = tgt - s.sat; if (Math.abs(d) < 0.012) break;
+      e.vibrance = Math.round(clamp((e.vibrance || 0) + d * 220, 0, 60));
+      if (e.vibrance >= 60 && d > 0.02) e.saturation = Math.round(clamp((e.saturation || 0) + d * 90, 0, 18));
+      s = this.stats(this.render(ses, e));
+    }
+    return { vibrance: e.vibrance, saturation: e.saturation, sat0: s0.sat, sat: s.sat };
   },
   /* 色彩：用接近中性灰的像素估計色偏（暖色夕陽、晨光不算色偏） */
   wb(ses, edit) {

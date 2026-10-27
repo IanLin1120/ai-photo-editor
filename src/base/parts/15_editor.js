@@ -481,7 +481,7 @@ const Editor = {
         if (tone) { const zone = AutoLight.needZones(this.ses, this.edit); const r = zone ? AutoLight.solveZones(this.ses, this.edit, { iso }) : AutoLight.solve(this.ses, this.edit, { iso });
           const info = r._info, zm = r._masks || [], ex = r._extra; delete r._info; delete r._masks; delete r._extra; Object.assign(this.edit, r);
           this.edit.masks = this.edit.masks.filter((m) => !m.aiZone).concat(zm); if (ex) Object.assign(this.edit, ex);
-          if (wb) { this.edit.vibrance = Math.max(this.edit.vibrance || 0, Math.round(clamp((0.36 - info.after.sat) * 60, 6, 22))); }
+          if (wb) { const c = AutoLight.color(this.ses, this.edit); this.edit.vibrance = c.vibrance; this.edit.saturation = c.saturation; }
           msg = `已自動調整光線（${info.scene}場景）` + (wb ? '與色彩' : ''); }
       } catch (e) { console.error(e); const id = imgData(this.ses.aiPrev || this.ses.prev, 320); if (wb) { const w = autoWB(id); this.edit.wb = 'auto'; this.edit.temp = w.temp; this.edit.tint = w.tint; } if (tone) Object.assign(this.edit, autoTone(id, (this.rec.exif || {}).iso)); }
       this.busy(null); this.changed(); this.commit(tone && wb ? '自動' : tone ? '自動光線' : '自動白平衡'); this.renderPanel(); toast(msg, 2600);
@@ -594,7 +594,9 @@ const Editor = {
     Object.assign(this.edit.aiEnh = this.edit.aiEnh || {}, { d: base, skyOn: false });   // v1.13：不再自動加天空遮色片（邊緣會產生白邊光暈），天空亮部改由閉迴路的「亮部」處理
     this.aiEnhApply(100, prev.clear || 0);
     // v1.13：光線部分改用閉迴路求解（實際渲染、量測、修正），過曝救高光、太暗提陰影都算到位
-    try { const r = AutoLight.solve(this.ses, this.edit, { iso: ex.iso }); delete r._info; const ae = this.edit.aiEnh; for (const k of AutoLight.TONE) ae.d[k] = (k === 'exposure' ? Math.round((r[k] - ae.base[k]) * 100) / 100 : Math.round(r[k] - ae.base[k])); this.aiEnhApply(100); } catch (e) { console.warn('AutoLight', e); }
+    try { const r = AutoLight.solve(this.ses, this.edit, { iso: ex.iso }); delete r._info; const ae = this.edit.aiEnh; for (const k of AutoLight.TONE) ae.d[k] = (k === 'exposure' ? Math.round((r[k] - ae.base[k]) * 100) / 100 : Math.round(r[k] - ae.base[k])); this.aiEnhApply(100);
+      // v1.19.1：鮮豔度依照片原本彩度自動補足（之前固定只加一點點，顏色偏淡）
+      const c = AutoLight.color(this.ses, this.edit); for (const k of ['vibrance', 'saturation']) ae.d[k] = Math.round((ae.d[k] || 0) + (c[k] || 0) - (this.edit[k] || 0)); this.aiEnhApply(100); } catch (e) { console.warn('AutoLight', e); }
     this.changed(); this.commit('AI 智慧增強'); this.renderPanel();
     toast(ex.iso >= 1600 ? `AI 增強完成（ISO ${ex.iso}：已節制暗部提亮，建議再開 AI 降噪）` : 'AI 增強完成，可用「強度」調整', 3500);
   },
