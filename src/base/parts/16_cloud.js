@@ -171,7 +171,7 @@ const Cloud = {
       }
       if (it.mask) { const mb = await DB.get('ai', 'mask:' + it.id); if (mb) { const mr = await this.api('/git/blobs', { method: 'POST', body: { content: await this.blobB64(mb), encoding: 'base64' } }); tree.push({ path: `in/${it.id}_mask.png`, mode: '100644', type: 'blob', sha: mr.sha }); } }
     }
-    const man = { app: 'AI修圖軟體', model: j.model, items: j.items.filter((i) => i.file).map(({ id, file, ori, name, raw, chroma, sr, scale, fix, ops, p, parts, rawK, people }) => Object.assign(sr ? { id, file, name, kind: 'sr', scale: scale || 2, dn: 0.7 } : people ? { id, file, ori, name, raw: !!raw, kind: 'people' } : fix ? { id, file, ori, name, raw: !!raw, kind: 'fix', ops, p, chroma: chroma ?? 0.6 } : { id, file, ori, name, raw: !!raw, chroma: chroma ?? 0.6 }, parts ? { parts } : {}, raw && rawK ? { rawK } : {})) };
+    const man = { app: 'AI修圖軟體', model: j.model, hf: (CFG.gen && CFG.gen.hf) || undefined, items: j.items.filter((i) => i.file).map(({ id, file, ori, name, raw, chroma, sr, scale, fix, ops, p, parts, rawK, people }) => Object.assign(sr ? { id, file, name, kind: 'sr', scale: scale || 2, dn: 0.7 } : people ? { id, file, ori, name, raw: !!raw, kind: 'people' } : fix ? { id, file, ori, name, raw: !!raw, kind: 'fix', ops, p, chroma: chroma ?? 0.6 } : { id, file, ori, name, raw: !!raw, chroma: chroma ?? 0.6 }, parts ? { parts } : {}, raw && rawK ? { rawK } : {})) };
     if (!man.items.length) throw new Error('沒有可上傳的相片');
     const mb = await this.api('/git/blobs', { method: 'POST', body: { content: this.b64text(JSON.stringify(man)), encoding: 'base64' } });
     tree.push({ path: 'job.json', mode: '100644', type: 'blob', sha: mb.sha });
@@ -298,7 +298,7 @@ const Cloud = {
     for (const s of ['prev', 'thumbs']) { const b = await DB.get(s, id + ':orig'); if (b) await DB.put(s, b, id); await DB.del(s, id + ':orig').catch(() => {}); }
     await DB.del('files', id + ':orig').catch(() => {}); await DB.del('thumbs', 'e:' + id).catch(() => {});
     for (const k of ['fast', 'hq']) { DB.del('ai', `full:${id}:${k}`).catch(() => {}); for (const L of [1024, 1536, 2048, 2560, 3072]) DB.del('ai', `${id}:${k}:${L}`).catch(() => {}); }
-    await DB.del('ai', 'cloud:' + id).catch(() => {}); delete r.cloudAi;
+    await DB.del('ai', 'cloud:' + id).catch(() => {}); delete r.cloudAi; r.restoredAt = Date.now();
     r.masterOri1 = o.masterOri1; r.w = o.w; r.h = o.h; delete r.fixOrig; delete r.fixed; delete r.fixAt;
     await DB.put('photos', r); const lr = Library.recs.find((x) => x.id === id); if (lr) { Object.assign(lr, r); delete lr.fixOrig; delete lr.fixed; delete lr.cloudAi; if (!r.masterOri1) delete lr.masterOri1; }
     await this.syncEditor(id, r);
@@ -402,7 +402,9 @@ const Cloud = {
   state(r) {
     const j = this.active().find((x) => x.items.some((i) => i.id === r.id));
     if (j) return j.state === 'uploading' ? 'up' : j.state === 'running' ? 'run' : j.state === 'downloading' ? 'down' : 'wait';
-    const bad = this.jobs.find((x) => x.state === 'error' && x.items.some((i) => i.id === r.id) && !(r.cloudAi > x.t));
+    // v1.18：失敗只在「之後沒有再成功、也沒有還原過」時才顯示；舊的「雲端偵測人物」工作已改在手機上做，不再顯示它的失敗
+    const okT = Math.max(r.cloudAi || 0, r.fixAt || 0, r.restoredAt || 0, ...this.jobs.filter((x) => x.state !== 'error' && x.items.some((i) => i.id === r.id && i.ok)).map((x) => x.t));
+    const bad = this.jobs.find((x) => x.state === 'error' && x.kind !== 'people' && x.items.some((i) => i.id === r.id) && x.t > okT);
     if (bad) return 'err';
     return r.cloudAi ? 'done' : null;
   },

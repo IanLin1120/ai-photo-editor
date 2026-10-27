@@ -9,6 +9,11 @@ import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.provider.Settings;
+import android.provider.MediaStore;
+import android.database.Cursor;
+import android.content.ContentUris;
+import android.content.pm.ResolveInfo;
+import java.util.List;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -33,6 +38,10 @@ public class Geo {
     static final int REQ_LOC = 77;
     static final String[] PERMS = { "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION" };
     static MainActivity act;
+    static Uri editSrc; static long editT0, editMod;
+    static long modified(MainActivity a, Uri u) {
+        try { Cursor c = a.getContentResolver().query(u, new String[] { MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.SIZE }, null, null, null); if (c == null) return 0; try { return c.moveToFirst() ? c.getLong(0) * 1000003L + c.getLong(1) : 0; } finally { c.close(); } } catch (Throwable t) { return 0; }
+    }
     static GeolocationPermissions.Callback pendCb;
     static String pendOrigin;
 
@@ -143,6 +152,45 @@ public class Geo {
                 try { File f = new File(act.getCacheDir(), "update.apk"); report("download", 0, null); download(url, f); install(f); }
                 catch (Throwable t) { report("error", 0, t.getMessage() == null ? t.toString() : t.getMessage()); }
             } }).start();
+        }
+        /* v1.18：用手機內建相簿（例如 OPPO 相簿的「AI 圖像助理 → AI 消除」）編輯剛存好的那張 → 回到 App 後取回結果，相片名稱維持原本的 */
+        @JavascriptInterface public String editLast(final String pkgPref) {
+            final MainActivity a = act; if (a == null) return "{\"ok\":false,\"err\":\"no activity\"}";
+            Uri u = null; synchronized (MainActivity.lastSaved) { if (!MainActivity.lastSaved.isEmpty()) u = MainActivity.lastSaved.get(MainActivity.lastSaved.size() - 1); }
+            if (u == null) return "{\"ok\":false,\"err\":\"沒有暫存檔\"}";
+            final Uri src = u; editSrc = src; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, src);
+            final Intent it = new Intent(Intent.ACTION_EDIT); it.setDataAndType(src, "image/jpeg");
+            it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            String used = "";
+            try {
+                List<ResolveInfo> L = a.getPackageManager().queryIntentActivities(it, 0);
+                String[] pref = (pkgPref == null || pkgPref.isEmpty() ? "com.coloros.gallery3d,com.oplus.gallery,com.oneplus.gallery,com.oppo.gallery3d" : pkgPref).split(",");
+                for (String p : pref) for (ResolveInfo r : L) if (r.activityInfo != null && p.equals(r.activityInfo.packageName)) { if (used.isEmpty()) { it.setClassName(r.activityInfo.packageName, r.activityInfo.name); used = p; } }
+                JSONObject o = new JSONObject(); o.put("ok", true); o.put("pkg", used); org.json.JSONArray arr = new org.json.JSONArray(); for (ResolveInfo r : L) if (r.activityInfo != null) arr.put(r.activityInfo.packageName); o.put("apps", arr);
+                final boolean direct = !used.isEmpty();
+                a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(direct ? it : Intent.createChooser(it, "用哪個 App 編輯")); } catch (Throwable t) { a.js("window.toast&&toast('找不到可以編輯相片的 App')"); } } });
+                return o.toString();
+            } catch (Throwable t) { return "{\"ok\":false,\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
+        }
+        /* 找編輯結果：① 編輯期間新增的相片（另存新檔）② 原檔被覆寫 */
+        @JavascriptInterface public String editResult() {
+            final MainActivity a = act; if (a == null || editSrc == null) return "{\"state\":\"none\"}";
+            try {
+                JSONObject o = new JSONObject(); long srcId = -1; try { srcId = ContentUris.parseId(editSrc); } catch (Throwable t) { }
+                Uri base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI; Uri hit = null; String name = "";
+                Cursor c = a.getContentResolver().query(base, new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME }, MediaStore.Images.Media.DATE_ADDED + ">=?", new String[] { String.valueOf(editT0) }, MediaStore.Images.Media.DATE_ADDED + " DESC");
+                if (c != null) { try { while (c.moveToNext()) { long id = c.getLong(0); if (id == srcId) continue; hit = ContentUris.withAppendedId(base, id); name = c.getString(1); break; } } finally { c.close(); } }
+                String state = "none";
+                if (hit != null) state = "new"; else if (modified(a, editSrc) > editMod) { hit = editSrc; state = "same"; }
+                o.put("state", state);
+                if (hit != null) { String key = "ext" + System.currentTimeMillis(); MainActivity.pickedUris.put(key, hit); o.put("key", key); o.put("name", name); o.put("uri", hit.toString()); }
+                return o.toString();
+            } catch (Throwable t) { return "{\"state\":\"error\",\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
+        }
+        /* 刪掉 App 自己建立的暫存檔（不會刪到相簿裡別的相片） */
+        @JavascriptInterface public boolean editCleanup() {
+            final MainActivity a = act; if (a == null || editSrc == null) return false;
+            try { a.getContentResolver().delete(editSrc, null, null); editSrc = null; return true; } catch (Throwable t) { return false; }
         }
         @JavascriptInterface public boolean has() { return act != null && Geo.has(act); }
         @JavascriptInterface public void request() {

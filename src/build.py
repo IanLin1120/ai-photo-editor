@@ -3,7 +3,7 @@
 用法：VER=1.11.0 CODE=19 MINAPK=1.11.0 NOTES="…" python3 build.py  → dist/index.html、dist/gh/"""
 import re, os, json, shutil
 H = os.path.dirname(os.path.abspath(__file__)); W = H + '/web/'
-VER = os.environ.get('VER', '1.17.1'); CODE = int(os.environ.get('CODE', '26')); MINAPK = os.environ.get('MINAPK', '1.11.0'); NOTES = os.environ.get('NOTES', '')
+VER = os.environ.get('VER', '1.18.0'); CODE = int(os.environ.get('CODE', '27')); MINAPK = os.environ.get('MINAPK', '1.11.0'); NOTES = os.environ.get('NOTES', '')
 rd = lambda f: open(W + f, encoding='utf8').read()
 P = H + '/base/parts/'; s = ''.join(open(P + f, encoding='utf8').read() for f in json.load(open(P + 'order.json')))
 def rep(old, new, cnt=1):
@@ -13,7 +13,7 @@ def rep(old, new, cnt=1):
 rep('<head>\n', '<head>\n<script>' + rd('ota_boot.js').replace('__VER__', VER) + '</script>\n')
 rep('</style>\n</head>', rd('maplibre-gl.css') + '\n' + rd('extra.css') + '</style>\n</head>')
 rep("<script>/* ================= 對話框 ================= */",
-    '<script>' + rd('maplibre-gl.js') + '</script>\n<script>' + re.sub(r'//# sourceMappingURL=\S+', '', rd('ort.wasm.min.js')) + '</script>\n<script>const ORT_MJS = ' + json.dumps(rd('ort_glue.mjs')).replace('</', '<\\/') + ';\n' + rd('people.js') + '</script>\n<script>' + rd('mapsearch.js') + '\n' + rd('upd.js') + '\n' + rd('autolight.js') + "</script>\n<script>/* ================= 對話框 ================= */")
+    '<script>' + rd('maplibre-gl.js') + '</script>\n<script>' + re.sub(r'//# sourceMappingURL=\S+', '', rd('ort.wasm.min.js')) + '</script>\n<script>const ORT_MJS = ' + json.dumps(rd('ort_glue.mjs')).replace('</', '<\\/') + ';\n' + rd('people.js') + '\n' + rd('gen.js') + '</script>\n<script>' + rd('mapsearch.js') + '\n' + rd('upd.js') + '\n' + rd('autolight.js') + "</script>\n<script>/* ================= 對話框 ================= */")
 rep("const APP_VERSION = '1.10.1';", f"const APP_VERSION = '{VER}';")
 rep("    root.append(card('ℹ️ 關於',", "    root.append(Upd.card(card));\n    root.append(card('ℹ️ 關於',")
 rep("    Cloud.resume();\n", "    Cloud.resume();\n    Upd.boot();\n")

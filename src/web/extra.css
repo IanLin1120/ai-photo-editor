@@ -60,3 +60,8 @@
 #expPill .grow{flex:1;min-width:0}#expPill .prog{flex:1 0 100%;order:9;margin:0}
 #expPill .ib{width:34px;height:34px;border-radius:50%;border:1px solid var(--edge);background:rgba(255,255,255,.3);color:var(--ink);font-size:15px;font-family:inherit}
 #pplPill .ib.on{background:var(--ac);color:#fff;border:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 35%,transparent)}
+/* v1.18 消除引擎 */
+.engBox{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.engSeg{margin:6px 0}
+.engIn{width:100%;box-sizing:border-box;margin:6px 0 2px;padding:10px 12px;border-radius:12px;border:1px solid var(--edge);background:rgba(255,255,255,.45);color:var(--ink);font-size:15px;font-family:inherit}
+[data-theme=dark] .engIn{background:rgba(255,255,255,.08)}

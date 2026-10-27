@@ -98,7 +98,40 @@ const People = {
       const m = await this.segment(bb).catch((e) => { console.warn('sam', e); return null; });
       if (m && m.score > 0.75 && m.area > p.area * 0.6 && m.area < p.area * 2.4) { p.polys = m.polys; p.sam = 1; }
     }
+    if (opt.shadow !== false) { onp && onp('偵測人影…', 1); try { this.shadows(img, res); } catch (e) { console.warn('shadow', e); } }
     return res;
+  },
+  /* v1.18：人影 — 從每個人腳邊往外找「明顯比周圍地面暗、而且和人連在一起」的區域，併入這個人的消除範圍 */
+  shadows(img, list) {
+    if (!list.length) return;
+    const W = img.width, H = img.height, sc = 900 / Math.max(W, H), gw = Math.max(8, Math.round(W * sc)), gh = Math.max(8, Math.round(H * sc));
+    const c = mkCanvas(gw, gh), x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0, gw, gh);
+    const d = x.getImageData(0, 0, gw, gh).data, N = gw * gh, L = new Float32Array(N);
+    for (let i = 0; i < N; i++) L[i] = 0.2126 * d[i * 4] + 0.7152 * d[i * 4 + 1] + 0.0722 * d[i * 4 + 2];
+    const raster = (polys, fill) => { const k = mkCanvas(gw, gh), y = k.getContext('2d', { willReadFrequently: true }); y.fillStyle = '#fff'; y.beginPath(); for (const pl of polys) { pl.forEach((q, j) => (j ? y.lineTo(q[0] * gw, q[1] * gh) : y.moveTo(q[0] * gw, q[1] * gh))); y.closePath(); } y.fill(); if (fill) { y.lineWidth = fill; y.strokeStyle = '#fff'; y.stroke(); } const a = y.getImageData(0, 0, gw, gh).data, o = new Uint8Array(N); for (let i = 0; i < N; i++) o[i] = a[i * 4] > 127; return o; };
+    const PM = raster(list.flatMap((p) => p.polys));
+    for (const p of list) {
+      const bx0 = p.box[0] * gw, by0 = p.box[1] * gh, bx1 = p.box[2] * gw, by1 = p.box[3] * gh, bw = bx1 - bx0, bh = by1 - by0; if (bh < 6 || by1 > gh * 0.975) continue;   // 腳被畫面切掉：看不到影子
+      const zx0 = Math.max(0, Math.floor(bx0 - 1.6 * bw)), zx1 = Math.min(gw - 1, Math.ceil(bx1 + 1.6 * bw)), zy0 = Math.max(0, Math.floor(by1 - 0.3 * bh)), zy1 = Math.min(gh - 1, Math.ceil(by1 + 0.6 * bh));
+      const vals = []; for (let y = zy0; y <= zy1; y++) for (let xx = zx0; xx <= zx1; xx++) { const i = y * gw + xx; if (!PM[i]) vals.push(L[i]); }
+      if (vals.length < 30) continue; vals.sort((a, b) => a - b); const ref = vals[Math.floor(vals.length * 0.6)];
+      const cand = (i) => !PM[i] && L[i] < ref * 0.72;
+      const me = raster(p.polys, 4), feetY = by1 - 0.12 * bh;
+      const seen = new Uint8Array(N), st = [], comp = [];
+      for (let y = Math.max(zy0, Math.floor(feetY)); y <= zy1; y++) for (let xx = zx0; xx <= zx1; xx++) { const i = y * gw + xx; if (me[i] && cand(i) && !seen[i]) { seen[i] = 1; st.push(i); } }
+      while (st.length) { const i = st.pop(); comp.push(i); const y = (i / gw) | 0, xx = i % gw; for (const [nx, ny] of [[xx - 1, y], [xx + 1, y], [xx, y - 1], [xx, y + 1]]) { if (nx < zx0 || nx > zx1 || ny < zy0 || ny > zy1) continue; const j = ny * gw + nx; if (!seen[j] && cand(j)) { seen[j] = 1; st.push(j); } } }
+      const pa = p.area * N; if (comp.length < Math.max(12, pa * 0.04) || comp.length > pa * 2) continue;
+      // 影子會在人的附近結束；一路延伸到搜尋範圍邊緣的暗區（深色地面、路緣、陰影帶）不是這個人的影子
+      let edge = 0; for (const i of comp) { const y = (i / gw) | 0, xx = i % gw; if (xx === zx0 || xx === zx1 || y === zy1) edge++; } if (edge > 2) continue;
+      let mean = 0; for (const i of comp) mean += L[i]; mean /= comp.length; if (mean > ref * 0.68) continue;
+      // 輪廓
+      let x0 = gw, y0 = gh, x1 = 0, y1 = 0; for (const i of comp) { const y = (i / gw) | 0, xx = i % gw; if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      const mw = x1 - x0 + 3, mh = y1 - y0 + 3, M = new Uint8Array(mw * mh); for (const i of comp) { const y = (i / gw) | 0, xx = i % gw; M[(y - y0 + 1) * mw + xx - x0 + 1] = 1; }
+      // 補小洞（閉運算的簡化版：上下左右都有影子的空格也算）
+      for (let y = 1; y < mh - 1; y++) for (let xx = 1; xx < mw - 1; xx++) { const i = y * mw + xx; if (!M[i] && M[i - 1] + M[i + 1] + M[i - mw] + M[i + mw] >= 3) M[i] = 1; }
+      const polys = this.contours(M, mw, mh, comp.length).map((pl) => this.simplify(pl, 0.8).map((q) => [(x0 + q[0] - 1) / gw, (y0 + q[1] - 1) / gh])).filter((pl) => pl.length >= 3);
+      if (polys.length) { p.polys = p.polys.concat(polys); p.shadow = 1; p.box = [Math.min(p.box[0], x0 / gw), Math.min(p.box[1], y0 / gh), Math.max(p.box[2], (x1 + 1) / gw), Math.max(p.box[3], (y1 + 1) / gh)]; }
+    }
   },
   iou(a, b) { const ix = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), iy = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1])), I = ix * iy; return I / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - I + 1e-9); },
   /* ---------- SAM（MobileSAM）：影像只編碼一次（約數秒），之後每個框／圈選只要零點幾秒 ---------- */

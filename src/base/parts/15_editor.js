@@ -1019,6 +1019,68 @@ const Editor = {
       h('button', { class: 'ib ok', disabled: !P.sel.size || !!this.pplWork, onclick: () => this.applyPeople() }, '✓'));
   },
   /* v1.17：在手機上偵測（數秒），選好後只把「要消除的人」送到雲端 AI 消除（LaMa） */
+  /* ---------- v1.18：消除引擎 ---------- */
+  ENG: { oc: ['ObjectClear', '免費・最自然（建議）', 'CVPR 2026 的生成式消除模型，會連人影、倒影一起消，補出來的背景最連貫；在雲端 CPU 上跑，比較慢：一張約 10–15 分鐘（一次送多張會依序處理）。'],
+    lama: ['LaMa', '免費・快', '雲端 CPU，約 3–5 分鐘。草地、牆面、天空等簡單背景效果好，複雜背景比較容易糊。'],
+    gemini: ['Gemini', '付費', 'Google「Nano Banana」生成式編輯，最接近 OPPO／Lightroom，在手機上直接處理（約 10–30 秒）；用你的 Gemini API 金鑰計費，每一塊約 NT$1–3。'] },
+  engineCard() {
+    const c = GenErase.cfg(), E = this.ENG[c.engine] || this.ENG.lama;
+    const inp = (ph, key, pw) => { const i = h('input', { type: pw ? 'password' : 'text', placeholder: ph, value: c[key] || '', class: 'engIn', autocomplete: 'off', spellcheck: 'false' }); i.onchange = () => { c[key] = i.value.trim(); saveCfg(); }; return i; };
+    const box = h('div', { class: 'engBox' }, h('div', { class: 'lab' }, h('span', null, '消除引擎')),
+      h('div', { class: 'seg engSeg' }, Object.keys(this.ENG).map((k) => h('button', { class: 'btn' + (c.engine === k ? ' on' : ''), onclick: () => { c.engine = k; saveCfg(); this.renderPanel(); } }, this.ENG[k][0]))),
+      h('div', { class: 'sub' }, h('b', null, E[1] + '：'), E[2]));
+    if (c.engine === 'gemini') {
+      const sel = h('select', { class: 'engIn' }, [['gemini-nano-banana-2.1', 'Nano Banana 2.1（建議）'], ['gemini-3.1-flash-image', 'Nano Banana 2'], ['gemini-3-pro-image', 'Nano Banana Pro（較貴）'], ['gemini-2.5-flash-image', 'Nano Banana（舊版）']].map(([v, t]) => h('option', { value: v, selected: c.model === v }, t)));
+      sel.onchange = () => { c.model = sel.value; saveCfg(); };
+      box.append(inp('Gemini API 金鑰（AIza…）', 'key', true), sel, h('div', { class: 'sub' }, '到 Google AI Studio 建立 API 金鑰並開啟計費；金鑰只存在這支手機。'));
+    }
+    return box;
+  },
+  async runGemini(maskCanvas, note) {
+    const id = this.rec.id;
+    if (!GenErase.cfg().key) { toast('請先在「消除引擎 → Gemini」填入 API 金鑰', 4000); return false; }
+    this.busy('Gemini 準備中…', true);
+    try {
+      await this.persist();
+      const full = await this.ses.ensureFull();
+      const r = await GenErase.run(full, maskCanvas, (t) => this.busy(t, true));
+      await Cloud.applyFix({ id, ops: ['erase'] }, r.blob, null, { done: ['erase'], erase: note || 'Gemini 生成式消除' });
+      this.busy(null); return true;
+    } catch (e) { this.busy(null); console.error(e); toast('Gemini 消除失敗：' + e.message, 7000); return false; }
+  },
+  /* ---------- v1.18：用手機內建相簿編輯（例如 OPPO「AI 圖像助理」），取回結果、名稱不變 ---------- */
+  async extEdit() {
+    if (!(isApp && window.AIP2 && AIP2.editLast)) { toast('這個功能需要安裝 v1.18 以上的 APK', 4000); return; }
+    const id = this.rec.id; this.busy('準備相片…', true);
+    try {
+      await this.persist();
+      const full = await this.ses.ensureFull(); const c = mkCanvas(full.width, full.height); c.getContext('2d').drawImage(full, 0, 0);
+      const blob = await canvasBlob(c, 'image/jpeg', 0.97); c.width = c.height = 1;
+      const base = (this.rec.name || 'photo').replace(/\.[^.]+$/, '');
+      await Exporter.save(`${base}_手機相簿編輯中.jpg`, 'image/jpeg', new Uint8Array(await blob.arrayBuffer()));
+      const r = JSON.parse(AIP2.editLast('') || '{}'); if (!r.ok) throw new Error(r.err || '無法開啟');
+      this.extPend = { id, t: Date.now(), pkg: r.pkg }; lsSet('aip.extPend', this.extPend);
+      this.busy(null);
+      toast(r.pkg ? '已開啟手機相簿：點「AI 圖像助理」使用 AI 消除等功能，完成後按「完成／儲存」，再回到這個 App' : '請選擇用手機相簿編輯；完成後儲存並回到這個 App', 7000);
+    } catch (e) { this.busy(null); toast('無法開啟手機相簿編輯：' + e.message, 5000); }
+  },
+  async extBack(force) {
+    const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult)) return;
+    if (!force && Date.now() - P.t < 3000) return;
+    const r = JSON.parse(AIP2.editResult() || '{}');
+    if (r.state !== 'new' && r.state !== 'same') {
+      Upd.dialog('沒有找到編輯後的相片', '如果還在手機相簿裡編輯，完成並儲存後再回來；或按「再檢查一次」。', [['再檢查一次', () => this.extBack(true)], ['放棄', () => { this.extPend = null; lsSet('aip.extPend', null); try { AIP2.editCleanup(); } catch (e) {} }], ['稍後', null]]);
+      return;
+    }
+    this.extPend = null; lsSet('aip.extPend', null);
+    try {
+      const b = await (await fetch(`https://aiphoto.app/pick/${r.key}`)).blob(); if (!b.size) throw new Error('讀不到檔案');
+      const rec = await DB.get('photos', P.id); if (!rec) throw new Error('找不到原本的相片');
+      await Cloud.applyFix({ id: P.id, ops: ['erase'] }, b, null, { done: ['erase'], erase: '已套用手機相簿的編輯（名稱維持「' + rec.name + '」）' });
+      try { AIP2.editCleanup(); } catch (e) {}
+      if (r.state === 'new') toast('手機相簿另外存了一張「' + (r.name || '新相片') + '」，不需要的話可以到相簿刪除', 6000);
+    } catch (e) { toast('取回編輯結果失敗：' + e.message, 5000); }
+  },
   async detectPeople(opt = {}) {
     if (this.pplBusy || !this.ses) return; const id = this.rec.id;
     const say = (t) => { this.pplBusy = t; const b = $('#pplBtn'); if (b) b.textContent = t; };
@@ -1059,9 +1121,11 @@ const Editor = {
       if (p.kind === 'obj') continue;
       const bx0 = p.box[0] * w, bx1 = p.box[2] * w, by = p.box[3] * hh; x.beginPath(); x.ellipse((bx0 + bx1) / 2, by, (bx1 - bx0) * 0.55, bh * 0.05, 0, 0, 7); x.fill();
     }
+    const eng = GenErase.cfg().engine;
+    if (eng === 'gemini') { if (await this.runGemini(c, `Gemini 生成式消除 ${sel.length} 個`)) { P.on = false; this.pplPill(); await DB.del('ai', 'people:' + id).catch(() => {}); this.ppl = null; } return; }
     const mask = await canvasBlob(c, 'image/png'); c.width = c.height = 1;
     await this.persist();
-    if (await Cloud.enqueueFix([this.rec], ['erase'], { erase: { people: sel.length } }, { [id]: mask })) {
+    if (await Cloud.enqueueFix([this.rec], ['erase'], { erase: { people: sel.length, engine: eng } }, { [id]: mask })) {
       P.on = false; this.pplPill(); await DB.del('ai', 'people:' + id).catch(() => {}); this.ppl = null; this.drawOverlay(); this.renderPanel();
       toast(`☁ 已送出消除 ${sel.length} 位人物，完成後自動套用（可在「AI 修復」還原原圖）`, 4500);
     }
@@ -1095,7 +1159,7 @@ const Editor = {
       h('button', { class: 'btn sm', onclick: async () => { if (!(await UI.confirm('還原成 AI 修復前的原圖？（其他調整會保留）', '還原'))) return; await Cloud.restoreFix(r.id); toast('已還原原圖'); } }, '還原原圖')));
     const em = this.eraseMaskFor(); const info = h('span', { class: 'sub' }); this.updEraseInfo = () => { info.textContent = em.p.strokes.length ? `已塗抹 ${em.p.strokes.filter((s) => !s.erase).length} 筆` : '尚未塗抹'; };
     b.append(
-      card('erase', '🧽 AI 消除', '塗抹路人、雜物、電線或反光點，雲端 AI 會依周圍內容自然補上背景。',
+      card('erase', '🧽 AI 消除', '塗抹路人、雜物、電線或反光點，AI 會依周圍內容自然補上背景（使用上方「消除引擎」選的引擎）。',
         h('div', { class: 'acts' }, h('button', { class: 'btn sm' + (this.erasePaint ? ' pri' : ''), onclick: () => { this.erasePaint = !this.erasePaint; this.renderPanel(); this.drawOverlay(); } }, this.erasePaint ? '🖌 塗抹中（點此暫停）' : '🖌 開始塗抹'),
           h('div', { class: 'seg' }, h('button', { class: 'btn' + (!this.eraseRubber ? ' on' : ''), onclick: () => { this.eraseRubber = false; this.renderPanel(); } }, '塗抹'), h('button', { class: 'btn' + (this.eraseRubber ? ' on' : ''), onclick: () => { this.eraseRubber = true; this.renderPanel(); } }, '擦掉')),
           h('button', { class: 'btn sm', onclick: () => { em.p.strokes = []; this.updEraseInfo(); this.drawOverlay(); } }, '清除'), info),
@@ -1133,6 +1197,9 @@ const Editor = {
     else box.append(h('div', { class: 'acts' }, h('button', { class: 'btn pri', id: 'pplBtn', disabled: !!job, onclick: () => this.detectPeople() }, P.none ? '👥 偵測畫面中的人物' : '沒有偵測到人物・重新偵測'),
       h('button', { class: 'btn', disabled: !!job, onclick: () => this.detectPeople({ lasso: true }) }, '⭕ 圈選物件')));
     if (job) box.append(h('div', { class: 'sub' }, '這張相片正在雲端處理中，完成後再選擇。'));
+    box.append(this.engineCard());
+    if (isApp) box.append(h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => this.extEdit() }, '📱 用手機相簿的 AI 編輯（OPPO AI 消除等）')),
+      h('div', { class: 'sub' }, '會開啟手機內建相簿的編輯畫面；用完 AI 消除等功能並儲存後回到這裡，結果會自動套用到這張，相片名稱不變。'));
     return box;
   },
   async sendFix(ops) {
@@ -1141,9 +1208,14 @@ const Editor = {
       const em = this.eraseMaskFor(); if (!em.p.strokes.some((s) => !s.erase)) { toast('請先在畫面上塗抹要消除的物件'); return; }
       const SW = this.ses.SW, SH = this.ses.SH, s = Math.min(1, 2048 / Math.max(SW, SH)); const w = Math.round(SW * s), hh = Math.round(SH * s);
       const m = rasterBrush(em, SW, SH, [0, 0, 1, 1], w, hh); const c = mkCanvas(w, hh); const x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, w, hh); x.drawImage(m, 0, 0);
-      masks[this.rec.id] = await canvasBlob(c, 'image/png');
+      if (GenErase.cfg().engine === 'gemini') {
+        if (!(await this.runGemini(c, 'Gemini 生成式消除'))) return;
+        this.eraseMask = null; this.erasePaint = false; ops = ops.filter((k) => k !== 'erase'); P.ops.erase = false;
+        if (!ops.length) { this.renderPanel(); this.drawOverlay(); return; }
+        await sleep(1500);
+      } else masks[this.rec.id] = await canvasBlob(c, 'image/png');
     }
-    const p = { deblur: { type: P.deblur.type, amt: P.deblur.amt / 100, full: !!P.deblur.full }, dereflect: { amt: P.dereflect.amt / 100 }, enhance: { amt: P.enhance.amt / 100 }, relight: { amt: P.relight.amt / 100 }, beauty: { amt: P.beauty.amt / 100 }, rescue: { amt: P.rescue.amt / 100, mode: P.rescue.mode } };
+    const p = { erase: { engine: GenErase.cfg().engine === 'gemini' ? 'lama' : GenErase.cfg().engine }, deblur: { type: P.deblur.type, amt: P.deblur.amt / 100, full: !!P.deblur.full }, dereflect: { amt: P.dereflect.amt / 100 }, enhance: { amt: P.enhance.amt / 100 }, relight: { amt: P.relight.amt / 100 }, beauty: { amt: P.beauty.amt / 100 }, rescue: { amt: P.rescue.amt / 100, mode: P.rescue.mode } };
     await this.persist();
     if (await Cloud.enqueueFix([this.rec], ops, p, masks)) { if (ops.includes('erase')) { this.eraseMask = null; this.erasePaint = false; } P.ops = {}; this.renderPanel(); this.drawOverlay(); }
   },

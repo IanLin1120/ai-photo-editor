@@ -23,6 +23,12 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.EDIT"/>
+            <data android:mimeType="image/*"/>
+        </intent>
+    </queries>
     <application
         android:theme="@style/AppTheme"
         android:label="AI修圖軟體"
