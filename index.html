@@ -4,7 +4,7 @@
 <script>/* 線上更新開機程式：手機上若已下載比 APK 內建更新的介面版本，就改用新版（存在 IndexedDB）。
    新版連續兩次沒有正常開啟 → 自動退回 APK 內建版本。網址加上 #builtin 也會強制使用內建版本。 */
 (function () {
-  var B = '1.19.2'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
+  var B = '1.19.3'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
   if (window.__OTA || location.hash.indexOf('builtin') >= 0) return;
   var v = null; try { v = JSON.parse(localStorage.getItem('aip.ota') || 'null'); } catch (e) {}
   function gt(a, b) { a = String(a).split('.').map(Number); b = String(b).split('.').map(Number); for (var i = 0; i < Math.max(a.length, b.length); i++) { var p = a[i] || 0, q = b[i] || 0; if (p !== q) return p > q; } return false; }
@@ -1617,16 +1617,23 @@ void main(){
   if(uFx.w!=0.0)p=p*(1.0-uFx.w*0.12)+uFx.w*0.08;
   /* 移除色差（紫邊/綠邊） */
   if(uFringe.z>0.0&&uHasT==1){
-    /* v1.13 加強版：除了邊緣本身，也偵測「緊鄰大面積高光」的位置（逆光樹枝、窗框），紫邊色相範圍放寬到藍紫～洋紅，
-       綠邊改為青綠色（避開一般樹葉的黃綠），並且只處理有彩度的像素 */
+    /* v1.19.3：只處理「真的紫邊／綠邊」— 細細一條、旁邊緊鄰很亮的高光，而且周圍不是同樣的顏色。
+       之前只看色相與邊緣，藍綠色外套、草地、藍條紋衣服這類「本來就是那個顏色」的東西靠近邊緣也會被去色（看起來變成橘黃色）。 */
     vec2 px1=1.0/uWork;float rr=max(1.5,4.0*uSigma);float mxN=0.0;
-    for(int i=0;i<8;i++){float an=float(i)*0.7854;vec2 of=vec2(cos(an),sin(an))*rr*px1;mxN=max(mxN,texture(uT,tc+of).r);mxN=max(mxN,texture(uT,tc+of*2.2).r);}
-    float tg=texture(uT,tc).g;
-    float e=clamp(abs(Lpre-tg)*14.0+length(vec2(dFdx(tg),dFdy(tg)))*24.0,0.0,1.0);
-    e=max(e,clamp((mxN-Lpre)*3.5,0.0,1.0)*smoothstep(0.4,0.75,mxN));
     vec3 hv=rgb2hsv(clamp(p,0.0,1.0));
     float pu=1.0-smoothstep(0.09,0.16,abs(hv.x-0.80)),gr=1.0-smoothstep(0.06,0.11,abs(hv.x-0.47));
-    float k=clamp(e*smoothstep(0.05,0.16,hv.y)*(pu*uFringe.x+gr*uFringe.y)*2.2,0.0,1.0);
+    float nbP=0.0,nbG=0.0;
+    for(int i=0;i<8;i++){float an=float(i)*0.7854;vec2 of=vec2(cos(an),sin(an))*rr*px1;mxN=max(mxN,texture(uT,tc+of).r);mxN=max(mxN,texture(uT,tc+of*2.2).r);
+      vec3 q=l2s(texture(uB,tc+of*3.0).rgb);vec3 qh=rgb2hsv(clamp(q,0.0,1.0));float qs=smoothstep(0.06,0.14,qh.y);
+      nbP+=qs*(1.0-smoothstep(0.09,0.16,abs(qh.x-0.80)));nbG+=qs*(1.0-smoothstep(0.06,0.11,abs(qh.x-0.47)));}
+    nbP/=8.0;nbG/=8.0;
+    float tg=texture(uT,tc).g;
+    /* 必須緊鄰高光（逆光、窗框、樹枝縫隙）：一般物體邊緣不處理 */
+    float e=clamp((mxN-Lpre)*3.5,0.0,1.0)*smoothstep(0.62,0.85,mxN);
+    e=max(e,clamp(abs(Lpre-tg)*10.0,0.0,1.0)*smoothstep(0.75,0.95,mxN));
+    /* 周圍多半也是這個顏色 → 是物體本身的顏色，不是色邊 */
+    float keepP=1.0-smoothstep(0.2,0.5,nbP),keepG=1.0-smoothstep(0.2,0.5,nbG);
+    float k=clamp(e*smoothstep(0.05,0.16,hv.y)*(pu*uFringe.x*keepP+gr*uFringe.y*keepG)*1.8,0.0,1.0);
     p=mix(p,vec3(dot(p,LUMA)),k);}
   o=vec4(p,B.a);
 }`;
@@ -7696,7 +7703,7 @@ const Settings = {
 };
 
 /* ================= App ================= */
-const APP_VERSION = '1.19.2';
+const APP_VERSION = '1.19.3';
 const App = {
   view: 'lib', clip: null, userPresets: [],
   async init() {
