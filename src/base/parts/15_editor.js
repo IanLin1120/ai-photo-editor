@@ -475,7 +475,8 @@ const Editor = {
       h('div', { class: 'acts' }, h('button', { class: 'btn pri', onclick: () => this.lrEdit(true) }, '🅻 Lightroom → 📱 手機相簿'),
         h('button', { class: 'btn sm', onclick: () => this.lrEdit() }, '🅻 只用 Lightroom'), h('button', { class: 'btn sm', onclick: () => this.extEdit() }, '📱 只用手機相簿')),
       window.AIP2 && AIP2.alertSettings ? h('div', { class: 'sub' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); AIP2.alertSettings(); } }, 'Lightroom 存好副本時沒有跳出橫幅通知？點這裡開啟「修圖流程提醒」的橫幅／浮動通知'),
-        CFG.extDel === 'always' ? h('span', null, '・', h('a', { href: '#', onclick: (e) => { e.preventDefault(); CFG.extDel = ''; saveCfg(); this.renderPanel(); toast('之後會先詢問再刪除副本'); } }, '刪副本前先詢問')) : null) : null,
+        CFG.extDel === 'always' ? h('span', null, '・', h('a', { href: '#', onclick: (e) => { e.preventDefault(); CFG.extDel = ''; saveCfg(); this.renderPanel(); toast('之後會先詢問再刪除副本'); } }, '刪副本前先詢問')) : null,
+        window.AIP2 && AIP2.canManageMedia && !AIP2.canManageMedia() && AIP2.askManageMedia ? h('span', null, '・', h('a', { href: '#', onclick: (e) => { e.preventDefault(); AIP2.askManageMedia(); toast('請把「媒體管理」打開，刪除副本就不用每次按允許', 4000); } }, '刪副本不用每次按「允許」')) : null) : null,
       this.rec && this.rec.fixOrig ? h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => this.restoreRaw() }, '↩ 還原成最初的 ' + (this.rec.rawLazy ? 'RAW' : '原圖'))) : null,
       mine ? h('div', { class: 'acts' }, h('span', { class: 'sub grow' }, '⏳ ' + st), h('button', { class: 'btn sm', onclick: () => this.extBack(true) }, '立即檢查'), h('button', { class: 'btn sm', onclick: () => { this.extDone(); try { AIP2.editCleanup(); } catch (e) {} this.renderPanel(); } }, '取消')) : null);
   },
@@ -1175,10 +1176,13 @@ const Editor = {
   extAskDelete(list) {
     const names = list.map((x) => '「' + (x.name || '相片') + '」').join('、');
     if (!(window.AIP2 && AIP2.deleteMedia)) { toast('相簿裡另外存了' + names + '，不需要的話可以到相簿刪除', 6000); return; }
-    const del = () => { if (AIP2.deleteMedia(JSON.stringify(list.map((x) => x.uri)))) toast('請在系統視窗按「允許」完成刪除', 3000); };
+    const mm = !!(AIP2.canManageMedia && AIP2.canManageMedia());
+    const del = () => { if (AIP2.deleteMedia(JSON.stringify(list.map((x) => x.uri)))) toast(mm ? '已刪除相簿裡多出來的照片' : '請在系統視窗按「允許」完成刪除', 3000); };
+    // v1.21.2：系統的刪除確認視窗是 Android 本身的畫面（無法改顏色）；開啟「媒體管理」權限後就不會再跳出來
+    const askMM = () => Upd.dialog('不用每次按「允許」', '刪除其他 App 存的相片時，Android 預設每次都會跳出系統確認視窗。<br>到設定裡把「AI修圖軟體」的<b>「媒體管理」</b>（管理媒體）打開後，就會直接刪除、不再詢問。<br><small>只會刪除修圖流程裡多出來的副本，原始照片不會刪除。需要 Android 12 以上。</small>', [['前往設定', () => { AIP2.askManageMedia(); }], ['取消', null]]);
     if (CFG.extDel === 'always') { del(); return; }
     Upd.dialog('刪除相簿裡多出來的照片？', `修好的照片已經帶入這裡了。手機相簿裡還有 ${names}（修圖時另外存的副本），要刪掉嗎？<br><small>原始照片不會被刪除。系統會再跳出一次確認。</small>`,
-      [['🗑 刪除', del], ['以後都直接刪除', () => { CFG.extDel = 'always'; saveCfg(); del(); }], ['保留', null]]);
+      [['🗑 刪除', del], ['以後都直接刪除', () => { CFG.extDel = 'always'; saveCfg(); del(); if (!mm && AIP2.askManageMedia) setTimeout(askMM, 1500); }], ...(!mm && AIP2.askManageMedia ? [['不要每次按「允許」…', askMM]] : []), ['保留', null]]);
   },
   extDone() { clearInterval(this.extWT); try { AIP2.unwatch && AIP2.unwatch(); } catch (e) {} this.extPend = null; lsSet('aip.extPend', null); BG.end('ext'); },
   /* 回到 App 時自動找編輯結果（相簿存檔可能慢幾秒，會重試幾次） */

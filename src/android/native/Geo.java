@@ -64,15 +64,41 @@ public class Geo {
     static PowerManager.WakeLock wl;
 
     /* 找編輯結果：回傳 { state, uri, name, size } */
+    /* v1.21.2：開始編輯時先記下相簿目前的狀態（基準），之後只把「真的新增的相片」或「原檔大小改變」當成修好的結果。
+       剛存好的暫存檔、Lightroom 副本在系統掃描完成時會更新時間（之前會被誤判成已經修好）→ 開始後 6 秒內的變動一律併入基準 */
+    static java.util.HashMap<Long, String> baseSig; static long editStart = 0, srcSize = -1;
+    static long sizeOf(MainActivity a, Uri u) { try { Cursor c = a.getContentResolver().query(u, new String[] { MediaStore.Images.Media.SIZE }, null, null, null); if (c == null) return -1; try { return c.moveToFirst() ? c.getLong(0) : -1; } finally { c.close(); } } catch (Throwable t) { return -1; } }
+    static Cursor recent(MainActivity a, long since) {
+        String[] cols = Build.VERSION.SDK_INT >= 29 ? new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE, MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.DATE_ADDED, MediaStore.Images.Media.IS_PENDING }
+            : new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE, MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.DATE_ADDED };
+        return a.getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cols, "(" + MediaStore.Images.Media.DATE_ADDED + ">=? OR " + MediaStore.Images.Media.DATE_MODIFIED + ">=?)", new String[] { String.valueOf(since), String.valueOf(since) }, MediaStore.Images.Media.DATE_MODIFIED + " DESC");
+    }
+    static void snapshot(MainActivity a) {
+        editStart = System.currentTimeMillis(); baseSig = new java.util.HashMap<Long, String>(); srcSize = editSrc != null ? sizeOf(a, editSrc) : -1;
+        try { Cursor c = recent(a, editStart / 1000 - 900); if (c != null) { try { while (c.moveToNext()) baseSig.put(c.getLong(0), c.getLong(3) + ":" + c.getLong(2)); } finally { c.close(); } } } catch (Throwable t) { }
+    }
     static Object[] find(MainActivity a) {
         long srcId = -1; try { srcId = ContentUris.parseId(editSrc); } catch (Throwable t) { }
         Uri base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI; Uri hit = null; String name = ""; long size = 0;
-        Cursor c = a.getContentResolver().query(base, new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE }, "(" + MediaStore.Images.Media.DATE_ADDED + ">=? OR " + MediaStore.Images.Media.DATE_MODIFIED + ">=?)", new String[] { String.valueOf(editT0), String.valueOf(editT0) }, MediaStore.Images.Media.DATE_MODIFIED + " DESC");
-        if (c != null) { try { while (c.moveToNext()) { long id = c.getLong(0); if (id == srcId) continue; if (c.getLong(2) <= 0) continue; hit = ContentUris.withAppendedId(base, id); name = c.getString(1); size = c.getLong(2); break; } } finally { c.close(); } }
+        boolean have = baseSig != null && editStart > 0, grace = have && System.currentTimeMillis() - editStart < 6000;
+        Cursor c = recent(a, have ? editStart / 1000 - 900 : editT0);
+        if (c != null) { try { while (c.moveToNext()) {
+            long id = c.getLong(0); if (id == srcId) continue; long sz = c.getLong(2); if (sz <= 0) continue;
+            if (c.getColumnCount() > 5 && c.getInt(5) != 0) continue;   // 還在寫入中
+            if (have) { if (baseSig.containsKey(id)) continue; if (grace || c.getLong(4) < editStart / 1000 - 2) { baseSig.put(id, c.getLong(3) + ":" + sz); continue; } }
+            else if (c.getLong(4) < editT0 + 3) continue;   // App 重新啟動後沒有基準：只認開始編輯之後才新增的相片
+            hit = ContentUris.withAppendedId(base, id); name = c.getString(1); size = sz; break;
+        } } finally { c.close(); } }
         String state = "none";
-        if (hit != null) state = "new"; else { long m = modified(a, editSrc); if (m > editMod) { hit = editSrc; state = "same"; size = m; } }
+        if (hit != null) state = "new";
+        else if (editSrc != null) {
+            long sz = sizeOf(a, editSrc);
+            if (have) { if (grace || srcSize <= 0) { if (sz > 0) srcSize = sz; } else if (sz > 0 && sz != srcSize) { hit = editSrc; state = "same"; size = sz; } }
+            else { long m = modified(a, editSrc); if (m > editMod) { hit = editSrc; state = "same"; size = m; } }
+        }
         return new Object[] { state, hit, name, size };
     }
+    static boolean canManage(Context a) { try { return Build.VERSION.SDK_INT >= 31 && MediaStore.canManageMedia(a); } catch (Throwable t) { return false; } }
     static void buzz(String pattern) {
         try {
             Vibrator v = (Vibrator) act.getSystemService(Context.VIBRATOR_SERVICE); if (v == null || !v.hasVibrator()) return;
@@ -270,7 +296,7 @@ public class Geo {
             final MainActivity a = act; if (a == null) return "{\"ok\":false,\"err\":\"no activity\"}";
             Uri u = null; synchronized (MainActivity.lastSaved) { if (!MainActivity.lastSaved.isEmpty()) u = MainActivity.lastSaved.get(MainActivity.lastSaved.size() - 1); }
             if (u == null) return "{\"ok\":false,\"err\":\"沒有暫存檔\"}";
-            final Uri src = u; editSrc = src; editTemp = true; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, src);
+            final Uri src = u; editSrc = src; editTemp = true; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, src); snapshot(a);
             final Intent it = new Intent(Intent.ACTION_EDIT); it.setDataAndType(src, "image/jpeg");
             it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             String used = "";
@@ -299,7 +325,7 @@ public class Geo {
                 else { it = new Intent(Intent.ACTION_EDIT); it.setDataAndType(u, mime); }
                 it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | ("send".equals(mode) ? 0 : Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
                 if (pkg != null && !pkg.isEmpty()) { it.setPackage(pkg); if (it.resolveActivity(a.getPackageManager()) == null) return "{\"ok\":false,\"err\":\"notInstalled\"}"; }
-                editSrc = u; editTemp = temp; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, u);
+                editSrc = u; editTemp = temp; editT0 = System.currentTimeMillis() / 1000 - 3; editMod = modified(a, u); snapshot(a);
                 a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(it); } catch (Throwable t) { a.js("window.toast&&toast('無法開啟該 App')"); } } });
                 JSONObject o = new JSONObject(); o.put("ok", true); o.put("src", u.toString()); o.put("t0", editT0); o.put("mod", editMod); o.put("mime", mime); return o.toString();
             } catch (Throwable t) { return "{\"ok\":false,\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
@@ -335,16 +361,23 @@ public class Geo {
                 if (L.isEmpty()) return false;
                 if (Build.VERSION.SDK_INT >= 30) {
                     final PendingIntent pi = MediaStore.createDeleteRequest(a.getContentResolver(), L);
+                    if (!canManage(a)) buzz("0,60,60,60");   // 系統確認視窗跳出時震動提醒
                     a.runOnUiThread(new Runnable() { public void run() { try { a.startIntentSenderForResult(pi.getIntentSender(), 7781, null, 0, 0, 0); } catch (Throwable t) { a.js("window.toast&&toast('無法刪除：" + "'+'" + "')"); } } });
                 } else { for (Uri u : L) { try { a.getContentResolver().delete(u, null, null); } catch (Throwable t) { } } }
                 return true;
             } catch (Throwable t) { return false; }
         }
+        /* v1.21.2：「媒體管理」特殊權限（Android 12 以上）：允許後刪除相簿副本不用每次按「允許」 */
+        @JavascriptInterface public boolean canManageMedia() { return act != null && canManage(act); }
+        @JavascriptInterface public void askManageMedia() {
+            final MainActivity a = act; if (a == null || Build.VERSION.SDK_INT < 31) return;
+            a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(new Intent("android.settings.REQUEST_MANAGE_MEDIA", Uri.parse("package:" + a.getPackageName()))); } catch (Throwable t) { try { a.startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + a.getPackageName()))); } catch (Throwable t2) { } } } });
+        }
         @JavascriptInterface public boolean hasApp(String pkg) { try { return act != null && act.getPackageManager().getLaunchIntentForPackage(pkg) != null; } catch (Throwable t) { return false; } }
         /* v1.18.1：App 在背景被系統關掉再開時，原本記在記憶體裡的資料會不見 → 由網頁把記錄傳回來 */
         @JavascriptInterface public String editResult3(String src, double t0, double mod, boolean temp) { editTemp = temp; return editResult2(src, t0, mod); }
         @JavascriptInterface public String editResult2(String src, double t0, double mod) {
-            try { if (src != null && !src.isEmpty()) editSrc = Uri.parse(src); if (t0 > 0) editT0 = (long) t0; if (mod != 0) editMod = (long) mod; } catch (Throwable t) { }
+            try { Uri u = src != null && !src.isEmpty() ? Uri.parse(src) : null; if (baseSig == null || editSrc == null || (u != null && !u.equals(editSrc))) { baseSig = null; editStart = 0; if (u != null) editSrc = u; if (t0 > 0) editT0 = (long) t0; if (mod != 0) editMod = (long) mod; } } catch (Throwable t) { }
             return editResult();
         }
         /* 找編輯結果：① 編輯期間新增的相片（另存新檔）② 原檔被覆寫 */
@@ -380,7 +413,7 @@ public class Geo {
         /* v1.21：在原生端監看相簿（網頁在背景時計時器會被系統放慢，所以改由原生監看）
            找到結果 → 震動＋浮動提示（沒有權限就用橫幅通知）＋ onNativeEvent('extFound') */
         @JavascriptInterface public void watch(String src, double t0, double mod, final String title, final String text) {
-            try { if (src != null && !src.isEmpty()) editSrc = Uri.parse(src); if (t0 > 0) editT0 = (long) t0; if (mod != 0) editMod = (long) mod; } catch (Throwable t) { }
+            try { Uri u = src != null && !src.isEmpty() ? Uri.parse(src) : null; if (baseSig == null || editSrc == null || (u != null && !u.equals(editSrc))) { baseSig = null; editStart = 0; if (u != null) editSrc = u; if (t0 > 0) editT0 = (long) t0; if (mod != 0) editMod = (long) mod; } } catch (Throwable t) { }
             wTitle = title; wText = text; main.post(new Runnable() { public void run() { startWatch(); } });
         }
         @JavascriptInterface public void unwatch() { main.post(new Runnable() { public void run() { stopWatch(); } }); }
