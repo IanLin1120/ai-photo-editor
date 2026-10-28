@@ -64,7 +64,7 @@ const Editor = {
     // RAW 剛匯入、真正的 RAW 預覽還沒建立：先用相機內嵌預覽立即開啟（可以照常調整），背景解碼完成後自動換成 RAW 畫面
     if (rec.prevEmb) this.upgradeRaw(rec, tok);
     this.edit = await refreshLens(rec, normEdit(rec.edit)); this.hist = [{ label: '開啟', s: JSON.stringify(this.edit) }]; this.hi = 0;
-    this.detail = null; this.detailKey = ''; this.selMask = null; this.selSpot = null; this.cmp = 'off'; $('#edCmp').classList.remove('on');
+    this.detail = null; this.detailKey = ''; this.beforeKey = ''; this.origBefore = null; this.selMask = null; this.selSpot = null; this.cmp = 'off'; $('#edCmp').classList.remove('on');
     this.view.fit = true; this.resize();
     this.setTool(this.tool === 'versions' || this.tool === 'crop' ? 'edit' : this.tool);
     this.ensureAi();
@@ -145,8 +145,23 @@ const Editor = {
     if (prevDims !== this.last.G.OW + 'x' + this.last.G.OH && this.view.fit) this.fit(true);
     if (this.cmp !== 'off') {
       const be = effective(normEdit({ crop: this.edit.crop, geo: this.edit.geo, heal: this.edit.heal, optics: { dist: this.edit.optics.dist } }));
-      const bk = JSON.stringify([be.crop, be.geo, be.heal, crop]);
-      if (bk !== this.beforeKey || !this.beforeTex) { this.beforeTex = this.ses.renderPreview(be, { cropOverride: crop, targetName: 'before' }).tex; this.beforeKey = bk; this.ses.guideKey = ''; this.ses.renderPreview(e, { cropOverride: crop, maskViz: viz }); }
+      // v1.21：「原圖」= 最初的照片（RAW）。用 AI 修復或外部 App（Lightroom、手機相簿）修過的，比對的是修之前那一張，而不是匯入回來的版本
+      const OW = this.last.G.OW, OH = this.last.G.OH;
+      if (this.rec.fixOrig && this.origBefore && this.origBefore.id === this.rec.id) {
+        const bk = 'orig|' + this.rec.id + '|' + (this.rec.fixAt || 0) + '|' + OW + 'x' + OH;
+        if (bk !== this.beforeKey || !this.beforeTex) {
+          const c = mkCanvas(OW, OH), x = c.getContext('2d'), im = this.origBefore.bm, k = Math.min(OW / im.width, OH / im.height), w = im.width * k, hh = im.height * k;
+          x.fillStyle = '#e8dcc6'; x.fillRect(0, 0, OW, OH); x.drawImage(im, (OW - w) / 2, (OH - hh) / 2, w, hh);
+          this.beforeTex = Engine.uploadImage(this.beforeOwn ? this.beforeTex : null, c, OW, OH); this.beforeOwn = true; this.beforeKey = bk; c.width = c.height = 1;
+        }
+      } else {
+        if (this.rec.fixOrig && !(this.origBefore && this.origBefore.id === this.rec.id) && !this.origLoading) {
+          this.origLoading = true; const id = this.rec.id;
+          DB.get('prev', id + ':orig').then(async (b) => { if (b && this.rec && this.rec.id === id) { this.origBefore = { id, bm: await createImageBitmap(b) }; this.beforeKey = ''; this.requestRender(); } }).catch(() => {}).finally(() => { this.origLoading = false; });
+        }
+        const bk = JSON.stringify([this.rec.id, this.ses.PW, this.ses.PH, this.rec.fixAt || 0, be.crop, be.geo, be.heal, crop]);
+        if (bk !== this.beforeKey || !this.beforeTex) { if (this.beforeOwn) { Engine.freeTex(this.beforeTex); this.beforeOwn = false; } this.beforeTex = this.ses.renderPreview(be, { cropOverride: crop, targetName: 'before' }).tex; this.beforeKey = bk; this.ses.guideKey = ''; this.ses.renderPreview(e, { cropOverride: crop, maskViz: viz }); }
+      }
     }
     this.display();
     clearTimeout(this.histT); if (!this.interactive) { this.histT = setTimeout(() => this.drawHisto(), 120); this.scheduleDetail(); }
@@ -459,6 +474,7 @@ const Editor = {
         h('button', { class: 'btn sm', onclick: () => this.lrEdit() }, '🅻 只用 Lightroom'), h('button', { class: 'btn sm', onclick: () => this.extEdit() }, '📱 只用手機相簿')),
       window.AIP2 && AIP2.alertSettings ? h('div', { class: 'sub' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); AIP2.alertSettings(); } }, 'Lightroom 存好副本時沒有跳出橫幅通知？點這裡開啟「修圖流程提醒」的橫幅／浮動通知'),
         CFG.extDel === 'always' ? h('span', null, '・', h('a', { href: '#', onclick: (e) => { e.preventDefault(); CFG.extDel = ''; saveCfg(); this.renderPanel(); toast('之後會先詢問再刪除副本'); } }, '刪副本前先詢問')) : null) : null,
+      this.rec && this.rec.fixOrig ? h('div', { class: 'acts' }, h('button', { class: 'btn sm', onclick: () => this.restoreRaw() }, '↩ 還原成最初的 ' + (this.rec.rawLazy ? 'RAW' : '原圖'))) : null,
       mine ? h('div', { class: 'acts' }, h('span', { class: 'sub grow' }, '⏳ ' + st), h('button', { class: 'btn sm', onclick: () => this.extBack(true) }, '立即檢查'), h('button', { class: 'btn sm', onclick: () => { this.extDone(); try { AIP2.editCleanup(); } catch (e) {} this.renderPanel(); } }, '取消')) : null);
   },
   p_auto(b) {
@@ -1069,6 +1085,7 @@ const Editor = {
   /* ---------- v1.18：用手機內建相簿編輯（例如 OPPO「AI 圖像助理」），取回結果、名稱不變 ---------- */
   async extEdit() {
     if (!(isApp && window.AIP2 && AIP2.editLast)) { toast('這個功能需要安裝 v1.18 以上的 APK', 4000); return; }
+    if (!(await this.ovlCheck())) return;
     const id = this.rec.id; this.busy('套用目前的調色、降噪後輸出…', true);
     try {
       await this.persist();
@@ -1090,6 +1107,7 @@ const Editor = {
     const LR = 'com.adobe.lrmobile';
     if (!(isApp && window.AIP2 && AIP2.openWith)) { toast('這個功能需要安裝 v1.19.2 以上的 APK', 4000); return; }
     if (AIP2.hasApp && !AIP2.hasApp(LR)) { Upd.dialog('手機沒有安裝 Lightroom', '請先從 Play 商店安裝 Adobe Lightroom。', [['前往 Play 商店', () => Upd.open('https://play.google.com/store/apps/details?id=' + LR)], ['取消', null]]); return; }
+    if (!(await this.ovlCheck())) return;
     const rec = this.rec, id = rec.id; await this.persist();
     let src = '';
     try {
@@ -1109,22 +1127,46 @@ const Editor = {
       toast('已把' + (src ? '原始 RAW' : '相片') + '送到 Lightroom：修好後「儲存副本／匯出到裝置」（JPG）' + (chain ? '，偵測到副本會通知你，點通知（或回到這個 App）就會直接切換到手機相簿繼續修' : '，回到這個 App 就會自動取回'), 8000);
     } catch (e) { this.busy(null); toast('無法開啟 Lightroom：' + e.message, 5000); }
   },
-  /* v1.19.4：Lightroom → 手機相簿 連續修圖：App 在背景每幾秒檢查一次 Lightroom 的副本，存好就發通知 */
+  /* v1.21：浮動提示視窗需要「顯示在其他應用程式上層」權限：第一次使用時詢問 */
+  async ovlCheck() {
+    if (!(window.AIP2 && AIP2.canOverlay) || AIP2.canOverlay() || CFG.ovlAsked) return true;
+    return new Promise((res) => Upd.dialog('開啟「顯示在其他應用程式上層」？', '修圖存好時，會在 Lightroom／手機相簿畫面下方約 1/3 的位置跳出提示窗（並震動），點一下就切回這個 App。<br><small>需要在系統設定裡允許「顯示在其他應用程式上層」；不開也可以，會改用通知列提醒。</small>',
+      [['前往設定', () => { CFG.ovlAsked = true; saveCfg(); AIP2.askOverlay(); toast('允許後回到這裡，再按一次就可以開始', 4000); res(false); }], ['先不用', () => { CFG.ovlAsked = true; saveCfg(); res(true); }]]));
+  },
+  /* v1.21：在原生端監看相簿（App 在背景時網頁計時器會被系統放慢，之前常常漏掉通知）
+     找到 Lightroom 副本／手機相簿存好的照片 → 震動＋螢幕下方浮動提示（點一下切回）＋ onNativeEvent('extFound') */
   extWatch() {
-    clearInterval(this.extWT); const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult)) { BG.end('ext'); return; }
+    clearInterval(this.extWT); const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult)) { BG.end('ext'); try { AIP2.unwatch && AIP2.unwatch(); } catch (e) {} return; }
     BG.set('ext', P.mode === 'chain1' ? '等待 Lightroom 儲存副本…' : P.mode === 'lr' ? '等待 Lightroom 修圖完成…' : '等待手機相簿修圖完成…');
-    if (P.mode !== 'chain1') return;
+    const msg = P.mode === 'chain1' ? ['✓ Lightroom 副本已儲存', '點「切回 AI修圖」繼續用手機相簿修圖'] : P.mode === 'lr' ? ['✓ Lightroom 修圖已儲存', '點「切回 AI修圖」帶入修好的照片'] : ['✓ 手機相簿修圖已儲存', '點「切回 AI修圖」帶入修好的照片'];
+    if (AIP2.watch) { try { AIP2.watch(P.src || '', P.t0 || 0, P.mod || 0, msg[0], msg[1]); } catch (e) {} return; }
+    if (P.mode !== 'chain1') return;   // 舊版 APK：只有 Lightroom 副本用網頁計時器檢查
     this.extWT = setInterval(() => {
       const Q = this.extPend || lsGet('aip.extPend', null); if (!Q || Q.mode !== 'chain1') { clearInterval(this.extWT); return; }
       if (!document.hidden || Q.found) return;
       try {
         const r = JSON.parse((AIP2.editResult3 ? AIP2.editResult3(Q.src || '', Q.t0 || 0, Q.mod || 0, false) : AIP2.editResult()) || '{}');
         if (r.state === 'new') { Q.found = r; this.extPend = Q; lsSet('aip.extPend', Q); clearInterval(this.extWT);
-          // v1.20：橫幅通知會直接浮在 Lightroom 畫面上，點一下就回來並自動切到手機相簿
-          if (AIP2.alert) AIP2.alert('✓ Lightroom 副本已儲存', '點這裡繼續用手機相簿修圖'); else NAT.call('notifyDone', '已偵測到 Lightroom 副本', '點這裡繼續用手機相簿修圖（' + (r.name || '') + '）');
+          if (AIP2.alert) AIP2.alert(msg[0], msg[1]); else NAT.call('notifyDone', msg[0], msg[1]);
           BG.set('ext', '已偵測到 Lightroom 副本，點通知繼續'); }
       } catch (e) {}
     }, 3000);
+  },
+  /* 原生監看找到結果 */
+  extFound(j) {
+    const P = this.extPend || lsGet('aip.extPend', null); if (!P) return;
+    BG.set('ext', P.mode === 'chain1' ? '已偵測到 Lightroom 副本，點提示切回繼續' : '修圖結果已儲存，點提示切回帶入');
+    if (!document.hidden) this.extBack(true);
+  },
+  /* v1.21：回到最初的照片（RAW），外部 App、AI 修復的結果與之後的調整全部清掉 */
+  restoreRaw() {
+    const r = this.rec; if (!r || !r.fixOrig) return;
+    Upd.dialog('還原成最初的' + (r.rawLazy ? ' RAW' : '原圖') + '？', '會回到剛匯入時的' + (r.rawLazy ? ' RAW ' : '') + '照片：Lightroom、手機相簿、AI 修復的結果，以及之後在這裡做的調整都會清除（調整也一併歸零）。', [['↩ 還原', async () => {
+      this.busy('還原中…', true);
+      try { r.extPrevEdit = null; await DB.put('photos', r); await Cloud.restoreFix(r.id); const rr = await DB.get('photos', r.id); if (rr) { rr.edit = normEdit({}); await DB.put('photos', rr); if (this.active && this.rec && this.rec.id === r.id) { this.edit = normEdit({}); this.rec.edit = this.edit; await this.open(this.rec); } } toast('已還原成最初的照片', 2500); }
+      catch (e) { toast('還原失敗：' + e.message, 4000); }
+      this.busy(null);
+    }], ['取消', null]]);
   },
   extAskDelete(list) {
     const names = list.map((x) => '「' + (x.name || '相片') + '」').join('、');
@@ -1134,7 +1176,7 @@ const Editor = {
     Upd.dialog('刪除相簿裡多出來的照片？', `修好的照片已經帶入這裡了。手機相簿裡還有 ${names}（修圖時另外存的副本），要刪掉嗎？<br><small>原始照片不會被刪除。系統會再跳出一次確認。</small>`,
       [['🗑 刪除', del], ['以後都直接刪除', () => { CFG.extDel = 'always'; saveCfg(); del(); }], ['保留', null]]);
   },
-  extDone() { clearInterval(this.extWT); this.extPend = null; lsSet('aip.extPend', null); BG.end('ext'); },
+  extDone() { clearInterval(this.extWT); try { AIP2.unwatch && AIP2.unwatch(); } catch (e) {} this.extPend = null; lsSet('aip.extPend', null); BG.end('ext'); },
   /* 回到 App 時自動找編輯結果（相簿存檔可能慢幾秒，會重試幾次） */
   async extBack(force) {
     const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult) || this.extBusy) return;
@@ -1146,8 +1188,8 @@ const Editor = {
         r = JSON.parse((AIP2.editResult3 ? AIP2.editResult3(P.src || '', P.t0 || 0, P.mod || 0, P.temp !== false) : AIP2.editResult2 ? AIP2.editResult2(P.src || '', P.t0 || 0, P.mod || 0) : AIP2.editResult()) || '{}');
         if (r.state === 'new' || r.state === 'same') break; await sleep(2000);
       }
-      if (P.found && (r.state !== 'new' && r.state !== 'same')) r = P.found;
-      try { AIP2.alertClear && AIP2.alertClear(); } catch (e) {}
+      if (P.found && P.found.key && (r.state !== 'new' && r.state !== 'same')) r = P.found;
+      try { AIP2.alertClear && AIP2.alertClear(); AIP2.popupClear && AIP2.popupClear(); } catch (e) {}
       if (r.state !== 'new' && r.state !== 'same') {
         Upd.dialog('還沒有找到編輯後的相片', (P.mode === 'lr' ? '在 Lightroom 修好後，請按「分享 → 匯出為…」或「儲存到裝置」存成 JPG，再回到這裡就會自動取回；' : '如果還在手機相簿裡編輯，完成並儲存後再回來就會自動取回；') + '也可以按「再檢查一次」。' + (r.err ? '<br><small>' + Upd.esc(r.err) + '</small>' : ''), [['再檢查一次', () => this.extBack(true)], ['不要了', () => { this.extDone(); try { AIP2.editCleanup(); } catch (e) {} }], ['稍後', null]]);
         return;
@@ -1182,29 +1224,72 @@ const Editor = {
     } catch (e) { this.busy(null); console.error(e); toast('取回編輯結果失敗：' + e.message, 5000); }
     finally { this.extBusy = false; }
   },
-  /* 手機相簿的 AI 消除會把照片縮小（例如 2400 萬像素 → 1100 萬）：只把「有被改到的地方」換成相簿的結果，其他地方保留原本的高解析度；
-     如果整張都被改了（例如用了濾鏡、AI 調色），就直接用相簿的結果 */
   async extMerge(sentBlob, newBlob) {
+    /* v1.21：手機相簿（OPPO AI 功能）會把照片縮小成約 1100 萬像素。取回時一律輸出「送出時的完整解析度」：
+       低頻（顏色、明暗、AI 消除補出來的內容）用手機相簿的結果，高頻細節用原本的完整解析度照片；
+       被 AI 改掉結構的地方（例如消除的人）不加回原本的細節，不會出現殘影。 */
     const S = await createImageBitmap(sentBlob), B = await createImageBitmap(newBlob);
     try {
-      const W = S.width, H = S.height, sameRatio = Math.abs(B.width / B.height - W / H) < 0.01;
-      if (!sameRatio) return { blob: newBlob, note: '' };
-      const g = 512 / Math.max(W, H), gw = Math.round(W * g), gh = Math.round(H * g);
-      const px = (bm) => { const c = mkCanvas(gw, gh), x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.drawImage(bm, 0, 0, gw, gh); return x.getImageData(0, 0, gw, gh).data; };
-      const a = px(S), b = px(B), N = gw * gh, M = new Uint8Array(N); let n = 0;
-      for (let i = 0; i < N; i++) { const d = Math.abs(a[i * 4] - b[i * 4]) + Math.abs(a[i * 4 + 1] - b[i * 4 + 1]) + Math.abs(a[i * 4 + 2] - b[i * 4 + 2]); if (d > 36) { M[i] = 1; n++; } }
-      const f = n / N;
-      if (f > 0.35 || n === 0) return { blob: newBlob, note: f > 0.35 ? '' : '' };
-      // 遮罩：外擴＋羽化後放大到原尺寸
-      const mc = mkCanvas(gw, gh), mx = mc.getContext('2d'), md = mx.createImageData(gw, gh);
-      for (let i = 0; i < N; i++) { const v = M[i] ? 255 : 0; md.data[i * 4] = md.data[i * 4 + 1] = md.data[i * 4 + 2] = 255; md.data[i * 4 + 3] = v; }
-      mx.putImageData(md, 0, 0);
-      const big = mkCanvas(W, H), bx = big.getContext('2d'); bx.filter = `blur(${Math.max(2, Math.round(W / gw * 2.5))}px)`;
-      for (let k = 0; k < 3; k++) bx.drawImage(mc, 0, 0, W, H);   // 疊三次 ≈ 外擴
-      bx.filter = 'none'; bx.globalCompositeOperation = 'source-in'; bx.imageSmoothingQuality = 'high'; bx.drawImage(B, 0, 0, W, H);
-      const o = mkCanvas(W, H), ox = o.getContext('2d'); ox.drawImage(S, 0, 0); ox.drawImage(big, 0, 0); big.width = big.height = 1;
-      const blob = await canvasBlob(o, 'image/jpeg', 0.96); o.width = o.height = 1;
-      return { blob, note: `；只替換被修改的區域（約 ${Math.max(1, Math.round(f * 100))}%），其餘保留原本 ${W}×${H} 的解析度` };
+      const W = S.width, H = S.height;
+      if (Math.abs(B.width / B.height - W / H) > 0.01) return { blob: newBlob, note: '' };   // 被裁切過：直接用相簿的結果
+      if (B.width >= W * 0.98) return { blob: newBlob, note: '' };                            // 沒有縮小：直接用
+      const k = B.width / W, out = mkCanvas(W, H), ox = out.getContext('2d');
+      // 結構改變圖（低解析度）：相簿結果與原圖的差異，去掉整體的調色變化後，剩下局部的大差異＝被 AI 改掉的地方
+      const ms = Math.min(1, Math.sqrt(1.2e6 / (W * H))), mw = Math.max(8, Math.round(W * ms)), mh = Math.max(8, Math.round(H * ms));
+      const mc = mkCanvas(mw, mh), mx = mc.getContext('2d', { willReadFrequently: true }); mx.imageSmoothingQuality = 'high';
+      mx.drawImage(S, 0, 0, mw, mh); const s0 = mx.getImageData(0, 0, mw, mh).data; mx.drawImage(B, 0, 0, mw, mh); const b0 = mx.getImageData(0, 0, mw, mh).data;
+      const N = mw * mh, sl = new Float32Array(N), bl = new Float32Array(N);
+      for (let i = 0; i < N; i++) { const o = i * 4; sl[i] = s0[o] * 0.299 + s0[o + 1] * 0.587 + s0[o + 2] * 0.114; bl[i] = b0[o] * 0.299 + b0[o + 1] * 0.587 + b0[o + 2] * 0.114; }
+      const box = (src, r) => { const t = new Float32Array(N), o = new Float32Array(N);
+        for (let y = 0; y < mh; y++) { let acc = 0; const row = y * mw; for (let x = -r; x <= r; x++) acc += src[row + Math.min(mw - 1, Math.max(0, x))];
+          for (let x = 0; x < mw; x++) { t[row + x] = acc / (2 * r + 1); acc += src[row + Math.min(mw - 1, x + r + 1)] - src[row + Math.max(0, x - r)]; } }
+        for (let x = 0; x < mw; x++) { let acc = 0; for (let y = -r; y <= r; y++) acc += t[Math.min(mh - 1, Math.max(0, y)) * mw + x];
+          for (let y = 0; y < mh; y++) { o[y * mw + x] = acc / (2 * r + 1); acc += t[Math.min(mh - 1, y + r + 1) * mw + x] - t[Math.max(0, y - r) * mw + x]; } }
+        return o; };
+      // 用「大範圍的線性對應」（亮度、對比的調整）從原圖預測相簿結果；預測不準的地方＝結構被 AI 改掉了
+      const r0 = 3, mS = box(sl, r0), mB = box(bl, r0), SS = new Float32Array(N), SB = new Float32Array(N);
+      for (let i = 0; i < N; i++) { SS[i] = sl[i] * sl[i]; SB[i] = sl[i] * bl[i]; }
+      const eS = box(SS, r0), eSB = box(SB, r0), vS = new Float32Array(N), cSB = new Float32Array(N);
+      for (let i = 0; i < N; i++) { vS[i] = Math.max(0, eS[i] - mS[i] * mS[i]); cSB[i] = eSB[i] - mS[i] * mB[i]; }
+      const R = Math.max(8, Math.round(Math.max(mw, mh) / 40)), gV = box(vS, R), gC = box(cSB, R);
+      let dev = new Float32Array(N);
+      let tC = 0, tV = 0; for (let i = 0; i < N; i++) { tC += cSB[i]; tV += vS[i]; } const aG = Math.max(0.3, Math.min(2.5, tC / (tV + 1)));
+      // 局部對應被 AI 改掉的區域拉低（整片被抹平時局部斜率≈0）→ 不得低於整張照片斜率的 6 成
+      for (let i = 0; i < N; i++) { const ag = Math.max(0.6 * aG, Math.min(2.5, gC[i] / (gV[i] + 4))); dev[i] = Math.abs(bl[i] - (mB[i] + ag * (sl[i] - mS[i]))); }
+      // 區域判斷：附近一整塊的平均差異（AI 消除的範圍裡，原本的紋理整片都對不上）＋ 單點差異，取較大者
+      { const d1 = box(dev, 2), d2 = box(dev, Math.max(5, Math.round(R / 2))); for (let i = 0; i < N; i++) dev[i] = Math.max(d1[i], d2[i] * 2.6); }
+      const wImg = mx.createImageData(mw, mh); let changed = 0;
+      for (let i = 0; i < N; i++) { const v = dev[i], w = v < 6 ? 1 : v > 16 ? 0 : 1 - (v - 6) / 10; if (w < 0.5) changed++; const g = Math.round(w * 255); wImg.data[i * 4] = wImg.data[i * 4 + 1] = wImg.data[i * 4 + 2] = g; wImg.data[i * 4 + 3] = 255; }
+      mx.putImageData(wImg, 0, 0);
+      // 擴大「被改掉」的範圍一點，避免邊緣殘影
+      const mc2 = mkCanvas(mw, mh), mx2 = mc2.getContext('2d', { willReadFrequently: true }); mx2.filter = 'blur(' + Math.max(1, R / 3) + 'px)'; mx2.drawImage(mc, 0, 0); mx2.filter = 'none';
+      { const d1 = mx.getImageData(0, 0, mw, mh), d2 = mx2.getImageData(0, 0, mw, mh).data; for (let i = 0; i < N * 4; i += 4) { const v = Math.min(d1.data[i], d2[i] < 250 ? d2[i] * 0.8 : d2[i]); d1.data[i] = d1.data[i + 1] = d1.data[i + 2] = v; } mx.putImageData(d1, 0, 0); }
+      mc2.width = mc2.height = 1;
+      const wc = mkCanvas(W, 1), wx = wc.getContext('2d', { willReadFrequently: true }); wx.imageSmoothingQuality = 'high';
+      const STR = 192, M = Math.ceil(4 / k) + 2;   // 每次處理一條（省記憶體），上下多留一點避免接縫
+      const lo = mkCanvas(Math.max(1, Math.round(W * k)), Math.max(1, Math.round((STR + 2 * M) * k))), lx = lo.getContext('2d', { willReadFrequently: true });
+      const a = mkCanvas(W, STR + 2 * M), ax = a.getContext('2d', { willReadFrequently: true }); ax.imageSmoothingQuality = 'high'; lx.imageSmoothingQuality = 'high';
+      for (let y0 = 0; y0 < H; y0 += STR) {
+        const ys = Math.max(0, y0 - M), ye = Math.min(H, y0 + STR + M), hh = ye - ys;
+        // 原圖這一條
+        ax.clearRect(0, 0, W, a.height); ax.drawImage(S, 0, ys, W, hh, 0, 0, W, hh); const Sd = ax.getImageData(0, 0, W, hh).data;
+        // 原圖的低頻（縮到相簿解析度再放大）
+        const lh = Math.max(1, Math.round(hh * k)); lx.clearRect(0, 0, lo.width, lo.height); lx.drawImage(S, 0, ys, W, hh, 0, 0, lo.width, lh);
+        ax.clearRect(0, 0, W, a.height); ax.drawImage(lo, 0, 0, lo.width, lh, 0, 0, W, hh); const Ld = ax.getImageData(0, 0, W, hh).data;
+        // 相簿結果放大到原尺寸
+        ax.clearRect(0, 0, W, a.height); ax.drawImage(B, 0, ys * k, B.width, hh * k, 0, 0, W, hh); const Bd = ax.getImageData(0, 0, W, hh);
+        const bd = Bd.data, n = W * hh;
+        if (wc.height !== hh) wc.height = hh; wx.clearRect(0, 0, W, hh); wx.drawImage(mc, 0, ys * ms * (mh / (H * ms)), mw, hh * (mh / H), 0, 0, W, hh); const Wd = wx.getImageData(0, 0, W, hh).data;
+        for (let i = 0; i < n; i++) {
+          // 只是調色的地方 → 加回完整細節；被 AI 改掉結構的地方（消除、補內容）→ 不加，避免殘影
+          const o = i * 4, w = Wd[o] / 255; if (w <= 0.002) continue;
+          for (let c = 0; c < 3; c++) { const v = bd[o + c] + w * (Sd[o + c] - Ld[o + c]); bd[o + c] = v < 0 ? 0 : v > 255 ? 255 : v; }
+        }
+        ax.putImageData(Bd, 0, 0); const top = y0 - ys, rows = Math.min(STR, H - y0); ox.drawImage(a, 0, top, W, rows, 0, y0, W, rows);
+        if ((y0 / STR) % 4 === 3) await sleep(0);
+      }
+      const blob = await canvasBlob(out, 'image/jpeg', 0.96); out.width = out.height = 1; a.width = a.height = 1; lo.width = lo.height = 1; wc.width = wc.height = 1; mc.width = mc.height = 1;
+      return { blob, note: `；保留原本 ${W}×${H} 的完整解析度（手機相簿輸出只有 ${B.width}×${B.height}）` };
     } finally { S.close(); B.close(); }
   },
   async detectPeople(opt = {}) {

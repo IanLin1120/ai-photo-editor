@@ -233,7 +233,10 @@ class Session {
       const raw = await DB.get('raw', this.rec.id); if (!raw) throw new Error('找不到 RAW 原始檔');
       this.full = await rawFull(raw, this.rec.rawK);
       // 第一次全解析度解碼後，在背景存一份 4:4:4 品質 100 的副本，之後放大／匯出直接讀取（不用再解 RAW）
-      if (window.OffscreenCanvas) { const c = this.full, id = this.rec.id; setTimeout(async () => { try { const oc = new OffscreenCanvas(c.width, c.height); oc.getContext('2d').drawImage(c, 0, 0); const b = await oc.convertToBlob({ type: 'image/jpeg', quality: 1 }); oc.width = oc.height = 1; await DB.put('files', b, id); } catch (e) { console.warn('raw cache', e); } }, 1500); }
+      if (window.OffscreenCanvas) { const c = this.full, id = this.rec.id; setTimeout(async () => { try { const oc = new OffscreenCanvas(c.width, c.height); oc.getContext('2d').drawImage(c, 0, 0); const b = await oc.convertToBlob({ type: 'image/jpeg', quality: 1 }); oc.width = oc.height = 1;
+        // v1.21：寫入前再確認一次 — 這段時間裡若已經套用 AI 修復／外部 App 修好的照片，絕對不能用 RAW 解碼結果蓋掉它（之前會偶爾發生：照片變回 2400 萬像素的未修版本）
+        const cur = await DB.get('files', id).catch(() => null), pr = await DB.get('photos', id).catch(() => null); if (cur || !pr || pr.masterOri1 || pr.fixOrig || pr.fixAt) return;
+        await DB.put('files', b, id); } catch (e) { console.warn('raw cache', e); } }, 1500); }
       if (this.full.width !== this.SW || this.full.height !== this.SH) { this.SW = this.full.width; this.SH = this.full.height; }
       return this.full;
     }
@@ -450,7 +453,26 @@ const Exporter = {
     $('#expPillTx').textContent = tx; const b = $('#epBar'); if (b) $('#expPillBar').style.width = b.style.width;
   },
   run(recs, getEdit, opt = {}) { const p = (this.chain || Promise.resolve()).then(() => this._run(recs, getEdit, opt)); this.chain = p.catch(() => {}); return p; },
+  /* 比對：全解析度輸出縮小後，和用同樣設定直接算的小圖逐區比較；回傳錯亂區塊數（0＝正常） */
+  async verify(ses, edit, r) {
+    if (r.W * r.H < 4e5) return 0;
+    const ref = await ses.exportPixels(edit, { long: 192, alpha: false }); const RW = ref.W, RH = ref.H;
+    const GX = 12, GY = 12, A = new Float64Array(GX * GY * 3), B = new Float64Array(GX * GY * 3), nA = new Float64Array(GX * GY), nB = new Float64Array(GX * GY);
+    const acc = (d, W, H, S, N, step) => { for (let y = 0; y < H; y += step) { const gy = Math.min(GY - 1, (y * GY / H) | 0); for (let x = 0; x < W; x += step) { const gx = Math.min(GX - 1, (x * GX / W) | 0), g = gy * GX + gx, o = (y * W + x) * 4; S[g * 3] += d[o]; S[g * 3 + 1] += d[o + 1]; S[g * 3 + 2] += d[o + 2]; N[g]++; } } };
+    acc(r.data, r.W, r.H, A, nA, Math.max(1, Math.floor(Math.max(r.W, r.H) / 600))); acc(ref.data, RW, RH, B, nB, 1);
+    let bad = 0; for (let g = 0; g < GX * GY; g++) { if (!nA[g] || !nB[g]) continue; let m = 0; for (let c = 0; c < 3; c++) m = Math.max(m, Math.abs(A[g * 3 + c] / nA[g] - B[g * 3 + c] / nB[g])); if (m > 30) bad++; }
+    return bad;
+  },
   async _run(recs, getEdit, opt) {
+    // v1.21：依拍攝時間由舊到新匯出（沒有拍攝時間的排最後，依檔名）
+    try { const coll = new Intl.Collator('zh-Hant', { numeric: true, sensitivity: 'base' }); recs = recs.slice().sort((a, b) => { const ta = Library.takenKey(a), tb = Library.takenKey(b); if (!ta !== !tb) return ta ? -1 : 1; return (ta && tb ? ta.localeCompare(tb) : 0) || coll.compare(a.name || '', b.name || ''); }); } catch (e) {}
+    // 螢幕關閉也繼續匯出：保持 CPU 運作（App 被滑掉才會停止）
+    try { window.AIP2 && AIP2.wake && AIP2.wake(true); } catch (e) {}
+    let wakeS = null; try { if (navigator.wakeLock && !document.hidden) wakeS = await navigator.wakeLock.request('screen').catch(() => null); } catch (e) {}
+    try { return await this._run2(recs, getEdit, opt); }
+    finally { try { window.AIP2 && AIP2.wake && AIP2.wake(false); } catch (e) {} try { wakeS && wakeS.release(); } catch (e) {} }
+  },
+  async _run2(recs, getEdit, opt) {
     const box = $('#expProg'); const ctl = this.ctl = { aborted: false }; this.bgMode = false;
     if (!opt.silent) { box.classList.add('on'); this.pill(null); }
     if (opt.silent) toast(`☁ 雲端結果已回傳，背景匯出 ${recs.length} 張到相簿…`, 3000);
@@ -473,7 +495,16 @@ const Exporter = {
         try {
           if (own) { ses = new Session(rec); await ses.load(); }
           const edit = await refreshLens(rec, normEdit(getEdit(rec)));
-          const r = await ses.exportPixels(edit, { long: CFG.exp.size === 'orig' ? 0 : CFG.exp.long, alpha: fmt !== 'jpeg', signal: ctl, progress: (f) => setP(f * 0.92), stage: (s) => ($('#epSub').textContent = s) });
+          // v1.21：輸出後再用小圖比對一次，發現有區塊錯亂（例如背景執行時繪圖被中斷、出現分割感）就自動重做，最多 3 次
+          let r = null;
+          for (let att = 0; att < 3; att++) {
+            r = await ses.exportPixels(edit, { long: CFG.exp.size === 'orig' ? 0 : CFG.exp.long, alpha: fmt !== 'jpeg', signal: ctl, progress: (f) => setP(f * 0.92), stage: (s) => ($('#epSub').textContent = s + (att ? `（第 ${att + 1} 次）` : '')) });
+            const bad = await this.verify(ses, edit, r).catch((e) => { console.warn('verify', e); return 0; });
+            if (!bad) break;
+            console.warn('export verify failed', rec.name, bad); r.bad = bad;
+            if (att < 2) { $('#epSub').textContent = '發現畫面錯亂，重新輸出…'; if (own) { ses.dispose(); ses = new Session(rec); await ses.load(); } await sleep(300); }
+          }
+          if (r.bad) throw new Error('輸出的畫面有錯亂，已重試 3 次仍失敗，請保持 App 開啟再匯出一次');
           $('#epSub').textContent = '編碼（' + (fmt === 'jpeg' ? `JPEG 品質 ${CFG.exp.q}${CFG.exp.sub444 ? '・4:4:4' : ''}` : fmt.toUpperCase()) + '）';
           await sleep(30);
           let bytes = await this.encode(r.data, r.W, r.H, fmt, CFG.exp.q);

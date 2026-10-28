@@ -68,3 +68,6 @@
 /* v1.20 */
 #updSheet{z-index:1200}
 .aicard a{color:var(--ac);text-decoration:none;font-weight:700}
+/* v1.21 專案 */
+.projbar{display:flex;gap:8px;align-items:center;margin:0 0 8px;padding:0 2px}
+.projbar .projsel{flex:1;min-width:0;padding:8px 10px;font-size:15px;font-weight:600;border-radius:12px;border:1px solid var(--line,rgba(127,127,127,.3));background:var(--card,transparent);color:inherit}

@@ -8,7 +8,10 @@ function h(tag, attrs, ...kids) {
 }
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* v1.21：App 在背景（螢幕關閉）時，瀏覽器會把 setTimeout 放慢到每秒、甚至每分鐘一次 → 短暫讓出改用 MessageChannel（不受限制），匯出不會變慢或停住 */
+const _mc = typeof MessageChannel !== 'undefined' ? new MessageChannel() : null, _mq = [];
+if (_mc) _mc.port1.onmessage = () => { const f = _mq.shift(); if (f) f(); };
+const sleep = (ms) => new Promise((r) => { if (_mc && document.hidden && ms <= 60) { _mq.push(r); _mc.port2.postMessage(0); } else setTimeout(r, ms); });
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 function getP(o, p) { return p.split('.').reduce((a, k) => (a == null ? a : a[k]), o); }
 function setP(o, p, v) { const ks = p.split('.'); let a = o; for (let i = 0; i < ks.length - 1; i++) { if (a[ks[i]] == null) a[ks[i]] = {}; a = a[ks[i]]; } a[ks[ks.length - 1]] = v; }
@@ -66,7 +69,10 @@ function saveCfg() { lsSet('aip.cfg', CFG); }
 /* ================= 原生橋接 (APK) ================= */
 const isApp = !!window.AIP;
 const NAT = {
-  call(fn, ...a) { try { if (window.AIP && AIP[fn]) return AIP[fn](...a); } catch (e) { console.warn('NAT', fn, e); } return null; },
+  call(fn, ...a) {
+    // v1.21：所有完成通知都加上震動
+    if (fn === 'notifyDone') { try { if (window.AIP2 && AIP2.vibrate) AIP2.vibrate(''); else if (navigator.vibrate) navigator.vibrate([180, 110, 180]); } catch (e) {} }
+    try { if (window.AIP && AIP[fn]) return AIP[fn](...a); } catch (e) { console.warn('NAT', fn, e); } return null; },
   json(fn, ...a) { const r = this.call(fn, ...a); try { return r ? JSON.parse(r) : null; } catch (e) { return null; } }
 };
 /* 背景前景服務：多個工作（匯入、RAW 預覽、雲端 AI、背景匯出）共用一個通知，全部結束才停止 */
@@ -86,6 +92,7 @@ window.onNativeEvent = function (type, data) {
   else if (type === 'perm') Settings.render();
   else if (type === 'http') Cloud.onHttp(typeof data === 'string' ? JSON.parse(data) : data);
   else if (type === 'apk') { try { Upd.onApk(data); } catch (e) {} }
+  else if (type === 'extFound') { try { Editor.extFound(typeof data === 'string' ? JSON.parse(data) : data); } catch (e) {} }
   else if (type === 'closed') { try { Exporter.cancel(); } catch (e) {} }   // v1.17：App 從最近使用中被滑掉 → 取消匯出
   return false;
 };

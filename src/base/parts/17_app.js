@@ -77,8 +77,14 @@ const Library = {
   },
   async refresh() { this.recs = await DB.all('photos'); this.render(); },
   pick() { if (isApp && window.AIP && AIP.mediaList) { Gallery.open(); return; } if (isApp && NAT.call('pick') !== null) return; $('#fileIn').click(); },
-  filtered() {
+  projRecs() {
     let r = this.recs.slice();
+    { const cur = CFG.curProj || 'all', known = new Set((CFG.projects || []).map((p) => p.id));
+      if (cur === 'none') r = r.filter((x) => !x.project || !known.has(x.project)); else if (cur !== 'all' && known.has(cur)) r = r.filter((x) => x.project === cur); }
+    return r;
+  },
+  filtered() {
+    let r = this.projRecs();
     if (this.filter === 'edited') r = r.filter((x) => x.edited); else if (this.filter === 'pick') r = r.filter((x) => x.flag === 1); else if (this.filter === 'star') r = r.filter((x) => (x.rating || 0) >= 3);
     // 排序：拍攝時間（新→舊，沒有拍攝時間的排最後）、檔名（自然排序 A→Z，IMG_2 在 IMG_10 前）、匯入時間（新→舊）；可反轉
     const k = CFG.sort || 'added', rev = CFG.sortRev ? -1 : 1, coll = new Intl.Collator('zh-Hant', { numeric: true, sensitivity: 'base' });
@@ -99,8 +105,9 @@ const Library = {
   },
   takenText(r) { const t = this.takenKey(r); return t ? t.slice(0, 16).replace(/-/g, '/') : ''; },
   render() {
+    try { this.projBar(); } catch (e) { console.warn('projBar', e); }
     const f = $('#libFilter'); f.innerHTML = '';
-    const cnt = { all: this.recs.length, edited: this.recs.filter((x) => x.edited).length, pick: this.recs.filter((x) => x.flag === 1).length, star: this.recs.filter((x) => (x.rating || 0) >= 3).length };
+    const PR = this.projRecs(), cnt = { all: PR.length, edited: PR.filter((x) => x.edited).length, pick: PR.filter((x) => x.flag === 1).length, star: PR.filter((x) => (x.rating || 0) >= 3).length };
     for (const [k, n] of [['all', '全部'], ['edited', '已編輯'], ['pick', '精選'], ['star', '★3+']]) f.append(h('button', { class: 'btn' + (this.filter === k ? ' on' : ''), onclick: () => { this.filter = k; this.render(); } }, `${n} ${cnt[k]}`));
     for (const u of this.urls) URL.revokeObjectURL(u); this.urls = [];
     const g = $('#grid'); g.innerHTML = ''; g.classList.toggle('selecting', this.selecting);
@@ -198,9 +205,42 @@ const Library = {
   async remove(id) { for (const s of ['photos', 'files', 'thumbs', 'prev', 'raw']) await DB.del(s, id).catch(() => {}); await DB.del('thumbs', 'e:' + id).catch(() => {}); for (const k of ['fast', 'hq']) { DB.del('ai', `full:${id}:${k}`).catch(() => {}); for (const L of [1024, 1536, 2048, 2560, 3072]) DB.del('ai', `${id}:${k}:${L}`).catch(() => {}); } DB.del('ai', 'cloud:' + id).catch(() => {}); for (const s of ['files', 'prev', 'thumbs']) DB.del(s, id + ':orig').catch(() => {}); },
   queue: [], qRunning: false, qDone: 0, qTotal: 0,
   /* 匯入佇列：背景逐張處理，圖庫可繼續操作 */
+  /* v1.21：專案 — 每次匯入建立一個專案（以資料夾名稱命名，可改名）；同一批分次送進來的（15 秒內）算同一個專案 */
+  projFor() {
+    const now = Date.now(); if (this.lastProj && now - this.lastProjAt < 15000) { this.lastProjAt = now; return this.lastProj; }
+    const d = new Date(), p2 = (v) => String(v).padStart(2, '0');
+    let name = (this.nextProj && now - this.nextProj.at < 600000 && this.nextProj.name) || `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())} 匯入`;
+    this.nextProj = null; const L = CFG.projects = CFG.projects || [];
+    if (L.some((x) => x.name === name)) { let k = 2; while (L.some((x) => x.name === `${name} (${k})`)) k++; name = `${name} (${k})`; }
+    const pj = { id: 'p' + uid(), name, created: now }; L.push(pj); CFG.curProj = pj.id; saveCfg();
+    this.lastProj = pj.id; this.lastProjAt = now; return pj.id;
+  },
+  projName(id) { const p = (CFG.projects || []).find((x) => x.id === id); return p ? p.name : ''; },
+  projRename(id) {
+    const p = (CFG.projects || []).find((x) => x.id === id); if (!p) return;
+    const inp = h('input', { type: 'text', value: p.name, style: { width: '100%', padding: '10px', fontSize: '16px', borderRadius: '10px' } });
+    const n = this.recs.filter((r) => r.project === id).length;
+    UI.sheet('專案名稱', h('div', null, inp, h('div', { class: 'sub', style: { margin: '8px 2px' } }, `建立於 ${new Date(p.created).toLocaleString('zh-TW')}，共 ${n} 張相片`),
+      h('div', { class: 'acts' },
+        h('button', { class: 'btn', onclick: async () => { if (!(await UI.confirm(`移除專案「${p.name}」？相片不會刪除，會移到「未分類」。`, '移除專案', true))) return; CFG.projects = CFG.projects.filter((x) => x !== p); if (CFG.curProj === id) CFG.curProj = 'all'; saveCfg(); for (const r of this.recs.filter((r) => r.project === id)) { r.project = null; await DB.put('photos', r); } UI.close(); this.render(); } }, '移除專案'),
+        h('button', { class: 'btn pri', onclick: () => { const v = inp.value.trim(); if (!v) { toast('請輸入名稱'); return; } p.name = v; saveCfg(); UI.close(); this.render(); toast('已改名為「' + v + '」'); } }, '儲存'))));
+    setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 300);
+  },
+  projBar() {
+    const f = $('#libFilter'); let pb = $('#projBar'); if (!pb) { pb = h('div', { id: 'projBar', class: 'projbar' }); f.before(pb); }
+    pb.innerHTML = ''; const L = CFG.projects || []; const cur = CFG.curProj || 'all';
+    const known = new Set(L.map((p) => p.id)), none = this.recs.filter((r) => !r.project || !known.has(r.project)).length;
+    if (!L.length) { pb.style.display = 'none'; return; } pb.style.display = '';
+    const sel = h('select', { class: 'projsel' }, h('option', { value: 'all', selected: cur === 'all' }, `📁 全部專案（${this.recs.length}）`),
+      L.slice().sort((a, b) => b.created - a.created).map((p) => h('option', { value: p.id, selected: p.id === cur }, `📁 ${p.name}（${this.recs.filter((r) => r.project === p.id).length}）`)),
+      none ? h('option', { value: 'none', selected: cur === 'none' }, `未分類（${none}）`) : null);
+    sel.onchange = () => { CFG.curProj = sel.value; saveCfg(); this.render(); };
+    pb.append(sel); if (known.has(cur)) pb.append(h('button', { class: 'btn sm', onclick: () => this.projRename(cur) }, '✎ 改名'));
+  },
   importFiles(list) {
     if (!list.length) return;
-    for (const it of list) this.queue.push(Object.assign({ st: '等待中', qid: uid() }, it));
+    const pj = this.projFor();
+    for (const it of list) this.queue.push(Object.assign({ st: '等待中', qid: uid(), proj: pj }, it));
     this.qTotal += list.length; this.render();
     if (!this.qRunning) this.runQueue();
   },
@@ -282,7 +322,7 @@ const Library = {
     } finally { this.devRunning = false; BG.end('develop'); }
   },
   updQ(it) { if (it.el && it.el.isConnected) it.el.querySelector('.qst').textContent = it.st; },
-  async importOne({ blob, name, mime, conv, mid }, stage) {
+  async importOne({ blob, name, mime, conv, mid, proj }, stage) {
     mime = mime || blob.type || '';
     let wasRaw = false, rawBlob = null, preDecoded = null, exifBin = null, fullWH = null, emb = false, rawK = 0;
     if (isRawName(name) || /x-(sony|canon|nikon|fuji|panasonic|olympus|pentax|adobe-dng)|image\/(dng|raw)/i.test(mime)) {
@@ -319,7 +359,7 @@ const Library = {
       if (lp.lens) { rec.lensKey = lp.key; rec.lensName = lp.name; const on = wasRaw ? CFG.lensAutoRaw !== false : !!CFG.lensAutoJpeg;
         if (on) { rec.edit = rec.edit || {}; rec.edit.optics = { prof: { on: true, key: lp.key, name: lp.name, d: 100, v: 100, tca: true, p: lp.p, camCrop: lp.camCrop } }; } }
     } catch (e) { console.warn('lens detect', e); }
-    rec.raw = wasRaw; if (mid != null) rec.mid = mid; if (emb) rec.prevEmb = true;
+    rec.raw = wasRaw; if (proj) rec.project = proj; if (mid != null) rec.mid = mid; if (emb) rec.prevEmb = true;
     if (wasRaw) { rec.rawLazy = true; rec.exifBin = exifBin; if (rawK) { rec.rawK = rawK; rec.rawV = 2; } await DB.put('raw', rawBlob, id); rec.hasRaw = true; }
     else await DB.put('files', blob, id);
     await DB.put('prev', prev, id); await DB.put('thumbs', thumb, id);
@@ -348,7 +388,7 @@ const Gallery = {
     const srt = h('select', { style: { padding: '5px 10px', fontSize: '14px', maxWidth: '48%' } }, SORTS.map(([k, n]) => h('option', { value: k, selected: k === (CFG.gsort || 'date-desc') }, n)));
     srt.onchange = () => { CFG.gsort = srt.value; saveCfg(); reset(); };
     const grid = h('div', { class: 'ggrid' }); this.countEl = h('b', null, '已選 0');
-    const goBtn = h('button', { class: 'btn pri', onclick: () => { if (!this.sel.size) { toast('請先點選相片'); return; } const ids = [...this.sel]; UI.close(); AIP.pickIds(JSON.stringify(ids)); toast(`開始匯入 ${ids.length} 張相片`); } }, '匯入');
+    const goBtn = h('button', { class: 'btn pri', onclick: () => { if (!this.sel.size) { toast('請先點選相片'); return; } const ids = [...this.sel]; UI.close(); Library.nextProj = { name: this.bucket || '', at: Date.now() }; AIP.pickIds(JSON.stringify(ids)); toast(`開始匯入 ${ids.length} 張相片`); } }, '匯入');
     this.goBtn = goBtn;
     const box = h('div', null,
       h('div', { class: 'lbl2', style: { gap: '6px' } }, sel, srt), h('div', { class: 'lbl2' }, h('span', { class: 'sub' }, '點選相片可多選'), h('span', { style: { display: 'flex', gap: '6px' } }, h('button', { class: 'btn sm', onclick: () => this.selectAll(grid) }, '全選'),

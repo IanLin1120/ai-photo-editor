@@ -11,8 +11,4 @@ v1.14.0：`Geo.java` 加入 App 內更新：`AIP2.installApk(url)` 下載 APK �
 
 v1.17.0：`MainActivity.onDestroy()` 開頭加入 `Geo.onDestroy(this)`：App 從最近使用中被滑掉（不是旋轉螢幕）時通知網頁 `onNativeEvent('closed')`，取消進行中的匯出。
 
-v1.18.0：`AIP2.editLast()`／`editResult()`／`editCleanup()`：把剛存的暫存 JPEG 用手機內建相簿（優先 OPPO／ColorOS 相簿）的編輯器開啟，回到 App 後找出編輯結果（另存的新相片或覆寫的原檔）交給網頁取回。Manifest 加入 `<queries>`（ACTION_EDIT image/*）。
-
-v1.19.2：`AIP2.openWith(uri, pkg, mode)`（分享或編輯到指定 App，例如 Lightroom）、`hasApp(pkg)`、`editResult3`；原始檔（非 App 暫存）絕不刪除。Manifest `<queries>` 加入 SEND image/* 與 com.adobe.lrmobile。
-
-v1.20.0：`AIP2.alert(title,text)`（高優先通知頻道 aiphoto_alert，會以橫幅浮在其他 App 上）、`alertClear()`、`alertSettings()`；`deleteMedia(json)` 以 MediaStore.createDeleteRequest 刪除其他 App 存的副本（系統確認）。
+v1.21.0：`Geo.java` 加入 `AIP2.vibrate`（震動）、`AIP2.wake`（匯出時 PARTIAL_WAKE_LOCK，螢幕關閉也繼續）、`AIP2.canOverlay/askOverlay/popup/popupClear`（螢幕下方 1/3 的浮動提示窗，SYSTEM_ALERT_WINDOW）、`AIP2.watch/unwatch`（原生 ContentObserver 監看 Lightroom／手機相簿存檔，找到就震動＋提示並發出 `onNativeEvent('extFound')`）。

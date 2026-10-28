@@ -36,6 +36,19 @@ import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.os.Vibrator;
+import android.os.VibrationEffect;
+import android.database.ContentObserver;
+import android.graphics.PixelFormat;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 /* v1.13：地圖「目前位置」需要的定位權限。包住原本的 WebChromeClient（選檔、主控台訊息照舊），只多處理定位。 */
 public class Geo {
@@ -47,6 +60,90 @@ public class Geo {
         try { Cursor c = a.getContentResolver().query(u, new String[] { MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.SIZE }, null, null, null); if (c == null) return 0; try { return c.moveToFirst() ? c.getLong(0) * 1000003L + c.getLong(1) : 0; } finally { c.close(); } } catch (Throwable t) { return 0; }
     }
     static GeolocationPermissions.Callback pendCb;
+    static final Handler main = new Handler(Looper.getMainLooper());
+    static PowerManager.WakeLock wl;
+
+    /* 找編輯結果：回傳 { state, uri, name, size } */
+    static Object[] find(MainActivity a) {
+        long srcId = -1; try { srcId = ContentUris.parseId(editSrc); } catch (Throwable t) { }
+        Uri base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI; Uri hit = null; String name = ""; long size = 0;
+        Cursor c = a.getContentResolver().query(base, new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.SIZE }, "(" + MediaStore.Images.Media.DATE_ADDED + ">=? OR " + MediaStore.Images.Media.DATE_MODIFIED + ">=?)", new String[] { String.valueOf(editT0), String.valueOf(editT0) }, MediaStore.Images.Media.DATE_MODIFIED + " DESC");
+        if (c != null) { try { while (c.moveToNext()) { long id = c.getLong(0); if (id == srcId) continue; if (c.getLong(2) <= 0) continue; hit = ContentUris.withAppendedId(base, id); name = c.getString(1); size = c.getLong(2); break; } } finally { c.close(); } }
+        String state = "none";
+        if (hit != null) state = "new"; else { long m = modified(a, editSrc); if (m > editMod) { hit = editSrc; state = "same"; size = m; } }
+        return new Object[] { state, hit, name, size };
+    }
+    static void buzz(String pattern) {
+        try {
+            Vibrator v = (Vibrator) act.getSystemService(Context.VIBRATOR_SERVICE); if (v == null || !v.hasVibrator()) return;
+            long[] p = { 0, 180, 110, 180 };
+            if (pattern != null && !pattern.isEmpty()) { String[] s = pattern.split(","); p = new long[s.length]; for (int i = 0; i < s.length; i++) p[i] = Long.parseLong(s[i].trim()); }
+            if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(p, -1)); else v.vibrate(p, -1);
+        } catch (Throwable t) { }
+    }
+    /* ---------- 浮動提示視窗 ---------- */
+    static LinearLayout pop; static Runnable popAuto;
+    static void hidePopup() { try { if (pop != null) ((WindowManager) act.getApplicationContext().getSystemService(Context.WINDOW_SERVICE)).removeView(pop); } catch (Throwable t) { } pop = null; if (popAuto != null) main.removeCallbacks(popAuto); }
+    static void bringBack() {
+        try { Context app = act.getApplicationContext(); Intent i = new Intent(app, MainActivity.class); i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT); app.startActivity(i); } catch (Throwable t) { }
+    }
+    static boolean popup(final String title, final String text, final String btn) {
+        if (act == null) return false;
+        try { if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(act)) return false; } catch (Throwable t) { return false; }
+        main.post(new Runnable() { public void run() {
+            try {
+                hidePopup();
+                final Context app = act.getApplicationContext(); final float d = app.getResources().getDisplayMetrics().density; final int sh = app.getResources().getDisplayMetrics().heightPixels;
+                WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+                LinearLayout box = new LinearLayout(app); box.setOrientation(LinearLayout.VERTICAL); int pd = (int) (18 * d); box.setPadding(pd, pd, pd, (int) (12 * d));
+                GradientDrawable bg = new GradientDrawable(); bg.setColor(0xF2202028); bg.setCornerRadius(20 * d); bg.setStroke((int) (1 * d), 0x33FFFFFF); box.setBackground(bg); box.setElevation(12 * d);
+                TextView t1 = new TextView(app); t1.setText(title); t1.setTextColor(Color.WHITE); t1.setTextSize(17); t1.setTypeface(null, android.graphics.Typeface.BOLD); box.addView(t1);
+                TextView t2 = new TextView(app); t2.setText(text); t2.setTextColor(0xFFCFCFD6); t2.setTextSize(14); t2.setPadding(0, (int) (6 * d), 0, (int) (12 * d)); box.addView(t2);
+                LinearLayout row = new LinearLayout(app); row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.END);
+                TextView later = new TextView(app); later.setText("稍後"); later.setTextColor(0xFFB0B0B8); later.setTextSize(15); later.setPadding((int) (16 * d), (int) (10 * d), (int) (16 * d), (int) (10 * d));
+                later.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { hidePopup(); } });
+                TextView go = new TextView(app); go.setText(btn == null || btn.isEmpty() ? "切回 AI修圖" : btn); go.setTextColor(Color.WHITE); go.setTextSize(15); go.setTypeface(null, android.graphics.Typeface.BOLD); go.setPadding((int) (20 * d), (int) (10 * d), (int) (20 * d), (int) (10 * d));
+                GradientDrawable gb = new GradientDrawable(); gb.setColor(0xFF3B82F6); gb.setCornerRadius(22 * d); go.setBackground(gb);
+                go.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { hidePopup(); bringBack(); } });
+                row.addView(later); row.addView(go); box.addView(row);
+                box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { hidePopup(); bringBack(); } });
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                    Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT);
+                lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL; lp.y = (int) (sh * 0.26); int m = (int) (14 * d);
+                box.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+                LinearLayout wrap = new LinearLayout(app); wrap.setPadding(m, 0, m, 0); wrap.addView(box, new LinearLayout.LayoutParams(-1, -2));
+                wm.addView(wrap, lp); pop = wrap;
+                popAuto = new Runnable() { public void run() { hidePopup(); } }; main.postDelayed(popAuto, 90000);
+            } catch (Throwable t) { }
+        } });
+        return true;
+    }
+    /* ---------- 原生相簿監看 ---------- */
+    static ContentObserver obs; static String wTitle, wText, lastSig = ""; static long watchUntil = 0; static boolean checking = false;
+    static final Runnable tick = new Runnable() { public void run() { check(); if (obs != null) main.postDelayed(tick, 2500); } };
+    static void startWatch() {
+        stopWatch(); if (act == null) return; watchUntil = System.currentTimeMillis() + 45 * 60 * 1000L; lastSig = "";
+        obs = new ContentObserver(main) { @Override public void onChange(boolean self) { main.removeCallbacks(tick); main.postDelayed(tick, 900); } };
+        try { act.getContentResolver().registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, obs); } catch (Throwable t) { }
+        main.postDelayed(tick, 2500);
+    }
+    static void stopWatch() { if (obs != null) { try { act.getContentResolver().unregisterContentObserver(obs); } catch (Throwable t) { } } obs = null; main.removeCallbacks(tick); }
+    static void check() {
+        if (act == null || editSrc == null || obs == null) return;
+        if (System.currentTimeMillis() > watchUntil) { stopWatch(); return; }
+        try {
+            Object[] f = find(act); Uri hit = (Uri) f[1]; if (hit == null) { lastSig = ""; return; }
+            String sig = hit.toString() + ":" + f[3];
+            if (!sig.equals(lastSig)) { lastSig = sig; return; }   // 等檔案寫完（大小連續兩次一樣）
+            stopWatch();
+            buzz(null);
+            String t = wTitle == null ? "✓ 修圖結果已儲存" : wTitle, x = wText == null ? "點這裡切回 AI修圖" : wText;
+            if (!popup(t, x, "切回 AI修圖")) new Js().alert(t, x);
+            JSONObject o = new JSONObject(); o.put("state", (String) f[0]); o.put("uri", hit.toString()); o.put("name", (String) f[2]);
+            act.js("window.onNativeEvent&&onNativeEvent('extFound'," + JSONObject.quote(o.toString()) + ")");
+        } catch (Throwable t) { }
+    }
     static String pendOrigin;
 
     static boolean has(MainActivity a) {
@@ -208,7 +305,7 @@ public class Geo {
                 b.setSmallIcon(a.getApplicationInfo().icon).setContentTitle(title).setContentText(text).setAutoCancel(true).setContentIntent(pi)
                  .setCategory(Notification.CATEGORY_REMINDER).setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_VIBRATE)
                  .addAction(new Notification.Action.Builder(null, "繼續修圖", pi).build());
-                nm.notify(7701, b.build());
+                nm.notify(7701, b.build()); buzz(null);
             } catch (Throwable t) { }
         }
         @JavascriptInterface public void alertSettings() {
@@ -243,17 +340,36 @@ public class Geo {
         @JavascriptInterface public String editResult() {
             final MainActivity a = act; if (a == null || editSrc == null) return "{\"state\":\"none\"}";
             try {
-                JSONObject o = new JSONObject(); long srcId = -1; try { srcId = ContentUris.parseId(editSrc); } catch (Throwable t) { }
-                Uri base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI; Uri hit = null; String name = "";
-                Cursor c = a.getContentResolver().query(base, new String[] { MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME }, "(" + MediaStore.Images.Media.DATE_ADDED + ">=? OR " + MediaStore.Images.Media.DATE_MODIFIED + ">=?)", new String[] { String.valueOf(editT0), String.valueOf(editT0) }, MediaStore.Images.Media.DATE_MODIFIED + " DESC");
-                if (c != null) { try { while (c.moveToNext()) { long id = c.getLong(0); if (id == srcId) continue; hit = ContentUris.withAppendedId(base, id); name = c.getString(1); break; } } finally { c.close(); } }
-                String state = "none";
-                if (hit != null) state = "new"; else if (modified(a, editSrc) > editMod) { hit = editSrc; state = "same"; }
-                o.put("state", state);
-                if (hit != null) { String key = "ext" + System.currentTimeMillis(); MainActivity.pickedUris.put(key, hit); o.put("key", key); o.put("name", name); o.put("uri", hit.toString()); }
+                Object[] f = find(a); JSONObject o = new JSONObject(); o.put("state", (String) f[0]);
+                Uri hit = (Uri) f[1];
+                if (hit != null) { String key = "ext" + System.currentTimeMillis(); MainActivity.pickedUris.put(key, hit); o.put("key", key); o.put("name", (String) f[2]); o.put("uri", hit.toString()); }
                 return o.toString();
             } catch (Throwable t) { return "{\"state\":\"error\",\"err\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}"; }
         }
+        /* v1.21：震動（所有完成通知都會震動） */
+        @JavascriptInterface public void vibrate(String pattern) { buzz(pattern); }
+        /* v1.21：匯出時保持 CPU 運作（螢幕關閉也繼續），結束後放開 */
+        @JavascriptInterface public void wake(boolean on) {
+            try {
+                if (on) { if (wl == null) { PowerManager pm = (PowerManager) act.getSystemService(Context.POWER_SERVICE); wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "aiphoto:export"); wl.setReferenceCounted(false); } wl.acquire(3 * 60 * 60 * 1000L); }
+                else if (wl != null && wl.isHeld()) wl.release();
+            } catch (Throwable t) { }
+        }
+        /* v1.21：浮動提示視窗（顯示在其他 App 上面、螢幕下方約 1/3 的位置） */
+        @JavascriptInterface public boolean canOverlay() { try { return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(act); } catch (Throwable t) { return false; } }
+        @JavascriptInterface public void askOverlay() {
+            final MainActivity a = act; if (a == null) return;
+            a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + a.getPackageName()))); } catch (Throwable t) { } } });
+        }
+        @JavascriptInterface public boolean popup(String title, String text, String btn) { return Geo.popup(title, text, btn); }
+        @JavascriptInterface public void popupClear() { main.post(new Runnable() { public void run() { hidePopup(); } }); }
+        /* v1.21：在原生端監看相簿（網頁在背景時計時器會被系統放慢，所以改由原生監看）
+           找到結果 → 震動＋浮動提示（沒有權限就用橫幅通知）＋ onNativeEvent('extFound') */
+        @JavascriptInterface public void watch(String src, double t0, double mod, final String title, final String text) {
+            try { if (src != null && !src.isEmpty()) editSrc = Uri.parse(src); if (t0 > 0) editT0 = (long) t0; if (mod != 0) editMod = (long) mod; } catch (Throwable t) { }
+            wTitle = title; wText = text; main.post(new Runnable() { public void run() { startWatch(); } });
+        }
+        @JavascriptInterface public void unwatch() { main.post(new Runnable() { public void run() { stopWatch(); } }); }
         /* 刪掉 App 自己建立的暫存檔（不會刪到相簿裡別的相片） */
         @JavascriptInterface public boolean editCleanup() {
             final MainActivity a = act; if (a == null || editSrc == null) return false;

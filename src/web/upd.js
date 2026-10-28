@@ -12,7 +12,7 @@ const Upd = {
   /* App 正常開啟：清除失敗計數；之後自動檢查（最多 6 小時一次） */
   boot() {
     try { localStorage.removeItem('aip.otaFail'); } catch (e) {}
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) { this.onResume(); try { Editor.extBack(); } catch (e) {} } });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { try { window.AIP2 && AIP2.popupClear && AIP2.popupClear(); } catch (e) {} this.onResume(); try { Editor.extBack(); } catch (e) {} } });
     // v1.18.1：從手機相簿編輯回來時 App 若被系統重新開啟，啟動後也會自動取回
     setTimeout(() => { try { if (lsGet('aip.extPend', null)) { Editor.extWatch(); if (!document.hidden) Editor.extBack(true); } } catch (e) {} }, 2500);
     // v1.17：每次開啟 App 都自動檢查（App 一直開著時，回到 App 且距離上次檢查超過 30 分鐘也會再檢查）；只有真的有新版本才跳出提示
