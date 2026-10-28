@@ -4,7 +4,7 @@
 <script>/* 線上更新開機程式：手機上若已下載比 APK 內建更新的介面版本，就改用新版（存在 IndexedDB）。
    新版連續兩次沒有正常開啟 → 自動退回 APK 內建版本。網址加上 #builtin 也會強制使用內建版本。 */
 (function () {
-  var B = '1.21.0'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
+  var B = '1.21.1'; if (!window.__OTA) window.APP_BUILTIN = B;   // 線上更新版重跑這段時，保留 APK 內建的版本號
   if (window.__OTA || location.hash.indexOf('builtin') >= 0) return;
   var v = null; try { v = JSON.parse(localStorage.getItem('aip.ota') || 'null'); } catch (e) {}
   function gt(a, b) { a = String(a).split('.').map(Number); b = String(b).split('.').map(Number); for (var i = 0; i < Math.max(a.length, b.length); i++) { var p = a[i] || 0, q = b[i] || 0; if (p !== q) return p > q; } return false; }
@@ -4413,8 +4413,10 @@ const Editor = {
       if (this.rec.fixOrig && this.origBefore && this.origBefore.id === this.rec.id) {
         const bk = 'orig|' + this.rec.id + '|' + (this.rec.fixAt || 0) + '|' + OW + 'x' + OH;
         if (bk !== this.beforeKey || !this.beforeTex) {
-          const c = mkCanvas(OW, OH), x = c.getContext('2d'), im = this.origBefore.bm, k = Math.min(OW / im.width, OH / im.height), w = im.width * k, hh = im.height * k;
-          x.fillStyle = '#e8dcc6'; x.fillRect(0, 0, OW, OH); x.drawImage(im, (OW - w) / 2, (OH - hh) / 2, w, hh);
+          const c = mkCanvas(OW, OH), x = c.getContext('2d'), im = this.origBefore.bm, ar = (im.width / im.height) / (OW / OH);
+          // v1.21.1：比例幾乎一樣 → 直接填滿；不一樣（外部 App 裁切過）→ 置中裁切填滿，不留黑邊／白邊
+          if (Math.abs(ar - 1) < 0.03) x.drawImage(im, 0, 0, OW, OH);
+          else { const k = Math.max(OW / im.width, OH / im.height), w = im.width * k, hh = im.height * k; x.drawImage(im, (OW - w) / 2, (OH - hh) / 2, w, hh); }
           this.beforeTex = Engine.uploadImage(this.beforeOwn ? this.beforeTex : null, c, OW, OH); this.beforeOwn = true; this.beforeKey = bk; c.width = c.height = 1;
         }
       } else {
@@ -5402,6 +5404,8 @@ const Editor = {
     clearInterval(this.extWT); const P = this.extPend || lsGet('aip.extPend', null); if (!P || !(window.AIP2 && AIP2.editResult)) { BG.end('ext'); try { AIP2.unwatch && AIP2.unwatch(); } catch (e) {} return; }
     BG.set('ext', P.mode === 'chain1' ? '等待 Lightroom 儲存副本…' : P.mode === 'lr' ? '等待 Lightroom 修圖完成…' : '等待手機相簿修圖完成…');
     const msg = P.mode === 'chain1' ? ['✓ Lightroom 副本已儲存', '點「切回 AI修圖」繼續用手機相簿修圖'] : P.mode === 'lr' ? ['✓ Lightroom 修圖已儲存', '點「切回 AI修圖」帶入修好的照片'] : ['✓ 手機相簿修圖已儲存', '點「切回 AI修圖」帶入修好的照片'];
+    if (AIP2.popupTheme) { try { const cs = getComputedStyle(document.documentElement), cx = mkCanvas(1, 1).getContext('2d'), hex = (v, d) => { cx.fillStyle = d; cx.fillStyle = (v || '').trim() || d; return cx.fillStyle; };
+      AIP2.popupTheme(hex(cs.getPropertyValue('--paper'), '#f4ecdc'), hex(cs.getPropertyValue('--ink'), '#3a2e22'), hex(cs.getPropertyValue('--sub'), '#7d6c57'), hex(cs.getPropertyValue('--ac'), '#a2613a')); } catch (e) {} }
     if (AIP2.watch) { try { AIP2.watch(P.src || '', P.t0 || 0, P.mod || 0, msg[0], msg[1]); } catch (e) {} return; }
     if (P.mode !== 'chain1') return;   // 舊版 APK：只有 Lightroom 副本用網頁計時器檢查
     this.extWT = setInterval(() => {
@@ -5495,12 +5499,26 @@ const Editor = {
     try {
       const W = S.width, H = S.height;
       if (Math.abs(B.width / B.height - W / H) > 0.01) return { blob: newBlob, note: '' };   // 被裁切過：直接用相簿的結果
-      if (B.width >= W * 0.98) return { blob: newBlob, note: '' };                            // 沒有縮小：直接用
-      const k = B.width / W, out = mkCanvas(W, H), ox = out.getContext('2d');
+      const k = B.width / W, ky = B.height / H, out = mkCanvas(W, H), ox = out.getContext('2d');
       // 結構改變圖（低解析度）：相簿結果與原圖的差異，去掉整體的調色變化後，剩下局部的大差異＝被 AI 改掉的地方
       const ms = Math.min(1, Math.sqrt(1.2e6 / (W * H))), mw = Math.max(8, Math.round(W * ms)), mh = Math.max(8, Math.round(H * ms));
       const mc = mkCanvas(mw, mh), mx = mc.getContext('2d', { willReadFrequently: true }); mx.imageSmoothingQuality = 'high';
       mx.drawImage(S, 0, 0, mw, mh); const s0 = mx.getImageData(0, 0, mw, mh).data; mx.drawImage(B, 0, 0, mw, mh); const b0 = mx.getImageData(0, 0, mw, mh).data;
+      // v1.21.1：外部 App 的結果如果邊緣有黑邊／白邊（原圖那裡不是純黑白）→ 那幾行直接用原圖
+      const edgeLine = (get, n) => { let bd = 0, bw = 0, sd = 0, sw = 0; for (let t = 0; t < n; t++) { const [bv, sv] = get(t); if (bv < 22) bd++; else if (bv > 236) bw++; if (sv < 22) sd++; else if (sv > 236) sw++; } return (bd > n * 0.94 && sd < n * 0.6) || (bw > n * 0.94 && sw < n * 0.6); };
+      const lum0 = (d, i) => d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114;
+      const brd = { t: 0, b: 0, l: 0, r: 0 }, lim = (n) => Math.ceil(n * 0.08);
+      while (brd.t < lim(mh) && edgeLine((x) => [lum0(b0, brd.t * mw + x), lum0(s0, brd.t * mw + x)], mw)) brd.t++;
+      while (brd.b < lim(mh) && edgeLine((x) => [lum0(b0, (mh - 1 - brd.b) * mw + x), lum0(s0, (mh - 1 - brd.b) * mw + x)], mw)) brd.b++;
+      while (brd.l < lim(mw) && edgeLine((y) => [lum0(b0, y * mw + brd.l), lum0(s0, y * mw + brd.l)], mh)) brd.l++;
+      while (brd.r < lim(mw) && edgeLine((y) => [lum0(b0, y * mw + mw - 1 - brd.r), lum0(s0, y * mw + mw - 1 - brd.r)], mh)) brd.r++;
+      // 換算成全解析度（多算 2 個像素＋1 行縮圖的量，確保邊緣乾淨）
+      const fx = W / mw, fy = H / mh, BT = brd.t ? Math.ceil((brd.t + 1) * fy) + 2 : 0, BB = brd.b ? H - Math.ceil((brd.b + 1) * fy) - 2 : H, BL = brd.l ? Math.ceil((brd.l + 1) * fx) + 2 : 0, BR = brd.r ? W - Math.ceil((brd.r + 1) * fx) - 2 : W;
+      if (B.width >= W * 0.98) {   // 沒有縮小：直接用（有黑白邊時把邊緣換回原圖）
+        if (!BT && !BL && BB === H && BR === W) { mc.width = mc.height = 1; out.width = out.height = 1; return { blob: newBlob, note: '' }; }
+        ox.drawImage(S, 0, 0); ox.save(); ox.beginPath(); ox.rect(BL, BT, BR - BL, BB - BT); ox.clip(); ox.drawImage(B, 0, 0, W, H); ox.restore();
+        const blob = await canvasBlob(out, 'image/jpeg', 0.96); out.width = out.height = 1; mc.width = mc.height = 1; return { blob, note: '；已移除邊緣的黑／白邊' };
+      }
       const N = mw * mh, sl = new Float32Array(N), bl = new Float32Array(N);
       for (let i = 0; i < N; i++) { const o = i * 4; sl[i] = s0[o] * 0.299 + s0[o + 1] * 0.587 + s0[o + 2] * 0.114; bl[i] = b0[o] * 0.299 + b0[o + 1] * 0.587 + b0[o + 2] * 0.114; }
       const box = (src, r) => { const t = new Float32Array(N), o = new Float32Array(N);
@@ -5537,15 +5555,19 @@ const Editor = {
         // 原圖這一條
         ax.clearRect(0, 0, W, a.height); ax.drawImage(S, 0, ys, W, hh, 0, 0, W, hh); const Sd = ax.getImageData(0, 0, W, hh).data;
         // 原圖的低頻（縮到相簿解析度再放大）
-        const lh = Math.max(1, Math.round(hh * k)); lx.clearRect(0, 0, lo.width, lo.height); lx.drawImage(S, 0, ys, W, hh, 0, 0, lo.width, lh);
+        const lh = Math.max(1, Math.round(hh * k)); if (lo.height !== lh) { lo.height = lh; lx.imageSmoothingQuality = 'high'; } lx.clearRect(0, 0, lo.width, lo.height); lx.drawImage(S, 0, ys, W, hh, 0, 0, lo.width, lh);
         ax.clearRect(0, 0, W, a.height); ax.drawImage(lo, 0, 0, lo.width, lh, 0, 0, W, hh); const Ld = ax.getImageData(0, 0, W, hh).data;
         // 相簿結果放大到原尺寸
-        ax.clearRect(0, 0, W, a.height); ax.drawImage(B, 0, ys * k, B.width, hh * k, 0, 0, W, hh); const Bd = ax.getImageData(0, 0, W, hh);
+        ax.clearRect(0, 0, W, a.height);
+        // v1.21.1：手機相簿縮圖的寬高比例不一定完全一樣（例如 4096×2731 → 2744×1829）→ 垂直方向用自己的比例，且不可超出邊界（之前最下面會讀到空白→黑邊）
+        { const sy = Math.max(0, ys * ky), sh = Math.min(B.height - sy, hh * ky); ax.drawImage(B, 0, sy, B.width, sh, 0, 0, W, hh); } const Bd = ax.getImageData(0, 0, W, hh);
         const bd = Bd.data, n = W * hh;
-        if (wc.height !== hh) wc.height = hh; wx.clearRect(0, 0, W, hh); wx.drawImage(mc, 0, ys * ms * (mh / (H * ms)), mw, hh * (mh / H), 0, 0, W, hh); const Wd = wx.getImageData(0, 0, W, hh).data;
+        if (wc.height !== hh) wc.height = hh; wx.clearRect(0, 0, W, hh); { const my = ys * mh / H, mhh = Math.min(mh - my, hh * mh / H); wx.drawImage(mc, 0, my, mw, mhh, 0, 0, W, hh); } const Wd = wx.getImageData(0, 0, W, hh).data;
         for (let i = 0; i < n; i++) {
           // 只是調色的地方 → 加回完整細節；被 AI 改掉結構的地方（消除、補內容）→ 不加，避免殘影
-          const o = i * 4, w = Wd[o] / 255; if (w <= 0.002) continue;
+          const o = i * 4, w = Wd[o] / 255; bd[o + 3] = 255;
+          if (BT || BL || BB < H || BR < W) { const py = ys + ((i / W) | 0), px = i % W; if (py < BT || py >= BB || px < BL || px >= BR) { bd[o] = Sd[o]; bd[o + 1] = Sd[o + 1]; bd[o + 2] = Sd[o + 2]; continue; } }
+          if (w <= 0.002) continue;
           for (let c = 0; c < 3; c++) { const v = bd[o + c] + w * (Sd[o + c] - Ld[o + c]); bd[o + c] = v < 0 ? 0 : v > 255 ? 255 : v; }
         }
         ax.putImageData(Bd, 0, 0); const top = y0 - ys, rows = Math.min(STR, H - y0); ox.drawImage(a, 0, top, W, rows, 0, y0, W, rows);
@@ -7925,7 +7947,7 @@ const Settings = {
 };
 
 /* ================= App ================= */
-const APP_VERSION = '1.21.0';
+const APP_VERSION = '1.21.1';
 const App = {
   view: 'lib', clip: null, userPresets: [],
   async init() {

@@ -83,6 +83,8 @@ public class Geo {
     }
     /* ---------- 浮動提示視窗 ---------- */
     static LinearLayout pop; static Runnable popAuto;
+    /* v1.21.1：提示窗配色跟 App 一致（由網頁傳入目前主題的顏色） */
+    static int cBg = 0xFFF6EEE1, cFg = 0xFF3A2A1F, cSub = 0xFF6E5B4A, cAcc = 0xFFA2613A, cLine = 0x33A2613A;
     static void hidePopup() { try { if (pop != null) ((WindowManager) act.getApplicationContext().getSystemService(Context.WINDOW_SERVICE)).removeView(pop); } catch (Throwable t) { } pop = null; if (popAuto != null) main.removeCallbacks(popAuto); }
     static void bringBack() {
         try { Context app = act.getApplicationContext(); Intent i = new Intent(app, MainActivity.class); i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT); app.startActivity(i); } catch (Throwable t) { }
@@ -95,15 +97,21 @@ public class Geo {
                 hidePopup();
                 final Context app = act.getApplicationContext(); final float d = app.getResources().getDisplayMetrics().density; final int sh = app.getResources().getDisplayMetrics().heightPixels;
                 WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-                LinearLayout box = new LinearLayout(app); box.setOrientation(LinearLayout.VERTICAL); int pd = (int) (18 * d); box.setPadding(pd, pd, pd, (int) (12 * d));
-                GradientDrawable bg = new GradientDrawable(); bg.setColor(0xF2202028); bg.setCornerRadius(20 * d); bg.setStroke((int) (1 * d), 0x33FFFFFF); box.setBackground(bg); box.setElevation(12 * d);
-                TextView t1 = new TextView(app); t1.setText(title); t1.setTextColor(Color.WHITE); t1.setTextSize(17); t1.setTypeface(null, android.graphics.Typeface.BOLD); box.addView(t1);
-                TextView t2 = new TextView(app); t2.setText(text); t2.setTextColor(0xFFCFCFD6); t2.setTextSize(14); t2.setPadding(0, (int) (6 * d), 0, (int) (12 * d)); box.addView(t2);
-                LinearLayout row = new LinearLayout(app); row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.END);
-                TextView later = new TextView(app); later.setText("稍後"); later.setTextColor(0xFFB0B0B8); later.setTextSize(15); later.setPadding((int) (16 * d), (int) (10 * d), (int) (16 * d), (int) (10 * d));
+                LinearLayout box = new LinearLayout(app); box.setOrientation(LinearLayout.VERTICAL); int pd = (int) (18 * d); box.setPadding(pd, (int) (16 * d), pd, (int) (12 * d));
+                GradientDrawable bg = new GradientDrawable(); bg.setColor(cBg); bg.setCornerRadius(24 * d); bg.setStroke((int) (1.5f * d), cLine); box.setBackground(bg); box.setElevation(16 * d);
+                LinearLayout head = new LinearLayout(app); head.setOrientation(LinearLayout.HORIZONTAL); head.setGravity(Gravity.CENTER_VERTICAL);
+                try { android.widget.ImageView ic = new android.widget.ImageView(app); ic.setImageDrawable(app.getApplicationInfo().loadIcon(app.getPackageManager())); int is = (int) (40 * d); LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(is, is); il.setMargins(0, 0, (int) (12 * d), 0); head.addView(ic, il); } catch (Throwable t) { }
+                LinearLayout tx = new LinearLayout(app); tx.setOrientation(LinearLayout.VERTICAL);
+                TextView t1 = new TextView(app); t1.setText(title); t1.setTextColor(cFg); t1.setTextSize(17); t1.setTypeface(null, android.graphics.Typeface.BOLD); tx.addView(t1);
+                TextView t2 = new TextView(app); t2.setText(text); t2.setTextColor(cSub); t2.setTextSize(14); t2.setPadding(0, (int) (3 * d), 0, 0); tx.addView(t2);
+                head.addView(tx, new LinearLayout.LayoutParams(0, -2, 1f)); box.addView(head);
+                LinearLayout row = new LinearLayout(app); row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.END); row.setPadding(0, (int) (12 * d), 0, 0);
+                TextView later = new TextView(app); later.setText("稍後"); later.setTextColor(cAcc); later.setTextSize(15); later.setPadding((int) (18 * d), (int) (10 * d), (int) (18 * d), (int) (10 * d));
+                GradientDrawable lb = new GradientDrawable(); lb.setColor((cAcc & 0x00FFFFFF) | 0x1A000000); lb.setCornerRadius(22 * d); later.setBackground(lb);
                 later.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { hidePopup(); } });
-                TextView go = new TextView(app); go.setText(btn == null || btn.isEmpty() ? "切回 AI修圖" : btn); go.setTextColor(Color.WHITE); go.setTextSize(15); go.setTypeface(null, android.graphics.Typeface.BOLD); go.setPadding((int) (20 * d), (int) (10 * d), (int) (20 * d), (int) (10 * d));
-                GradientDrawable gb = new GradientDrawable(); gb.setColor(0xFF3B82F6); gb.setCornerRadius(22 * d); go.setBackground(gb);
+                TextView go = new TextView(app); go.setText(btn == null || btn.isEmpty() ? "切回 AI修圖" : btn); go.setTextColor(Color.WHITE); go.setTextSize(15); go.setTypeface(null, android.graphics.Typeface.BOLD); go.setPadding((int) (22 * d), (int) (10 * d), (int) (22 * d), (int) (10 * d));
+                GradientDrawable gb = new GradientDrawable(); gb.setColor(cAcc); gb.setCornerRadius(22 * d); go.setBackground(gb);
+                LinearLayout.LayoutParams gl = new LinearLayout.LayoutParams(-2, -2); gl.setMargins((int) (10 * d), 0, 0, 0); go.setLayoutParams(gl);
                 go.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { hidePopup(); bringBack(); } });
                 row.addView(later); row.addView(go); box.addView(row);
                 box.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { hidePopup(); bringBack(); } });
@@ -121,21 +129,22 @@ public class Geo {
     }
     /* ---------- 原生相簿監看 ---------- */
     static ContentObserver obs; static String wTitle, wText, lastSig = ""; static long watchUntil = 0; static boolean checking = false;
-    static final Runnable tick = new Runnable() { public void run() { check(); if (obs != null) main.postDelayed(tick, 2500); } };
+    static final Runnable tick = new Runnable() { public void run() { main.removeCallbacks(tick); long nx = check(); if (obs != null) main.postDelayed(tick, nx); } };
     static void startWatch() {
         stopWatch(); if (act == null) return; watchUntil = System.currentTimeMillis() + 45 * 60 * 1000L; lastSig = "";
-        obs = new ContentObserver(main) { @Override public void onChange(boolean self) { main.removeCallbacks(tick); main.postDelayed(tick, 900); } };
+        obs = new ContentObserver(main) { @Override public void onChange(boolean self) { main.removeCallbacks(tick); main.postDelayed(tick, 250); } };
         try { act.getContentResolver().registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, obs); } catch (Throwable t) { }
-        main.postDelayed(tick, 2500);
+        main.postDelayed(tick, 1200);
     }
     static void stopWatch() { if (obs != null) { try { act.getContentResolver().unregisterContentObserver(obs); } catch (Throwable t) { } } obs = null; main.removeCallbacks(tick); }
-    static void check() {
-        if (act == null || editSrc == null || obs == null) return;
-        if (System.currentTimeMillis() > watchUntil) { stopWatch(); return; }
+    /* 回傳下次檢查的間隔（毫秒）：剛看到新檔案時 0.6 秒後再確認一次大小（確定寫完），平常每 1.2 秒 */
+    static long check() {
+        if (act == null || editSrc == null || obs == null) return 1200;
+        if (System.currentTimeMillis() > watchUntil) { stopWatch(); return 1200; }
         try {
-            Object[] f = find(act); Uri hit = (Uri) f[1]; if (hit == null) { lastSig = ""; return; }
+            Object[] f = find(act); Uri hit = (Uri) f[1]; if (hit == null) { lastSig = ""; return 1200; }
             String sig = hit.toString() + ":" + f[3];
-            if (!sig.equals(lastSig)) { lastSig = sig; return; }   // 等檔案寫完（大小連續兩次一樣）
+            if (!sig.equals(lastSig)) { lastSig = sig; return 600; }   // 等檔案寫完（大小連續兩次一樣）
             stopWatch();
             buzz(null);
             String t = wTitle == null ? "✓ 修圖結果已儲存" : wTitle, x = wText == null ? "點這裡切回 AI修圖" : wText;
@@ -143,7 +152,9 @@ public class Geo {
             JSONObject o = new JSONObject(); o.put("state", (String) f[0]); o.put("uri", hit.toString()); o.put("name", (String) f[2]);
             act.js("window.onNativeEvent&&onNativeEvent('extFound'," + JSONObject.quote(o.toString()) + ")");
         } catch (Throwable t) { }
+        return 1200;
     }
+
     static String pendOrigin;
 
     static boolean has(MainActivity a) {
@@ -362,6 +373,9 @@ public class Geo {
             a.runOnUiThread(new Runnable() { public void run() { try { a.startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + a.getPackageName()))); } catch (Throwable t) { } } });
         }
         @JavascriptInterface public boolean popup(String title, String text, String btn) { return Geo.popup(title, text, btn); }
+        @JavascriptInterface public void popupTheme(String bg, String fg, String sub, String acc) {
+            try { cBg = Color.parseColor(bg); cFg = Color.parseColor(fg); cSub = Color.parseColor(sub); cAcc = Color.parseColor(acc); cLine = (cAcc & 0x00FFFFFF) | 0x44000000; } catch (Throwable t) { }
+        }
         @JavascriptInterface public void popupClear() { main.post(new Runnable() { public void run() { hidePopup(); } }); }
         /* v1.21：在原生端監看相簿（網頁在背景時計時器會被系統放慢，所以改由原生監看）
            找到結果 → 震動＋浮動提示（沒有權限就用橫幅通知）＋ onNativeEvent('extFound') */
