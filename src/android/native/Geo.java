@@ -214,6 +214,14 @@ public class Geo {
         } catch (Throwable t) { }
     }
 
+    /* v1.22：系統刪除／移到垃圾桶確認視窗的結果（MainActivity.onActivityResult 開頭呼叫） */
+    static String pendDelKind = "";
+    public static boolean onResult(MainActivity a, int code, int res) {
+        if (code != 7781 && code != 7782) return false;
+        boolean ok = res == -1; if (ok) buzz("0,90,70,90");
+        try { JSONObject o = new JSONObject(); o.put("ok", ok); o.put("kind", code == 7782 ? "trash" : "delete"); a.js("window.onNativeEvent&&onNativeEvent('mediaDel'," + JSONObject.quote(o.toString()) + ")"); } catch (Throwable t) { }
+        return true;
+    }
     public static boolean onPerm(MainActivity a, int code) {
         if (code != REQ_LOC) return false;
         boolean ok = has(a);
@@ -368,6 +376,21 @@ public class Geo {
             } catch (Throwable t) { return false; }
         }
         /* v1.21.2：「媒體管理」特殊權限（Android 12 以上）：允許後刪除相簿副本不用每次按「允許」 */
+        /* v1.22：把手機相簿裡的相片移到垃圾桶（可在相簿的「最近刪除」救回）；有「媒體管理」權限就不會跳確認 */
+        @JavascriptInterface public boolean trashMedia(String json) {
+            final MainActivity a = act; if (a == null || Build.VERSION.SDK_INT < 30) return false;
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(json); final ArrayList<Uri> L = new ArrayList<Uri>();
+                for (int k = 0; k < arr.length(); k++) L.add(Uri.parse(arr.getString(k)));
+                if (L.isEmpty()) return false;
+                final PendingIntent pi = MediaStore.createTrashRequest(a.getContentResolver(), L, true);
+                if (!canManage(a)) buzz("0,60,60,60");
+                a.runOnUiThread(new Runnable() { public void run() { try { a.startIntentSenderForResult(pi.getIntentSender(), 7782, null, 0, 0, 0); } catch (Throwable t) { a.js("window.toast&&toast('無法移到垃圾桶')"); } } });
+                return true;
+            } catch (Throwable t) { return false; }
+        }
+        /* 檢查相片是否還在相簿（沒被刪除、沒在垃圾桶） */
+        @JavascriptInterface public boolean mediaExists(String uri) { try { Cursor c = act.getContentResolver().query(Uri.parse(uri), new String[] { MediaStore.Images.Media._ID }, null, null, null); if (c == null) return false; try { return c.moveToFirst(); } finally { c.close(); } } catch (Throwable t) { return false; } }
         @JavascriptInterface public boolean canManageMedia() { return act != null && canManage(act); }
         @JavascriptInterface public void askManageMedia() {
             final MainActivity a = act; if (a == null || Build.VERSION.SDK_INT < 31) return;

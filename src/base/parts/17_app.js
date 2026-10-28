@@ -163,6 +163,7 @@ const Library = {
       B('★ 評分', () => UI.menu('評分', [0, 1, 2, 3, 4, 5].map((k) => ({ label: k ? '★'.repeat(k) : '無評分', fn: async () => { for (const r of recs()) { r.rating = k; await DB.put('photos', r); } this.render(); } }))), !n),
       B('🏳 旗標', () => UI.menu('旗標', [[1, '🏳 精選'], [-1, '✕ 排除'], [0, '無旗標']].map(([k, l]) => ({ label: l, fn: async () => { for (const r of recs()) { r.flag = k; await DB.put('photos', r); } this.render(); } }))), !n),
       B('🗑 移除', async () => { if (!(await UI.confirm(`從 App 圖庫移除 ${n} 張相片？（不會刪除手機相簿中的原始檔）`, '移除', true))) return; for (const r of recs()) await this.remove(r.id); this.sel.clear(); await this.refresh(); }, !n),
+      B('🗑 刪除', () => this.trashLocal(recs(), { after: () => {} }), !n),
       B('完成', () => this.setSelecting(false)));
   },
   /* 多張 AI 修復（AI 消除需逐張塗抹，請在編輯器中使用） */
@@ -201,6 +202,25 @@ const Library = {
   },
   async rerenderThumb(r) {
     try { const s = new Session(r); await s.load(); const c = s.renderThumb(effective(normEdit(r.edit)), 480); const b = await canvasBlob(c, 'image/jpeg', .86); await DB.put('thumbs', b, 'e:' + r.id); s.dispose(); } catch (e) { console.warn(e); }
+  },
+  /* v1.22：把手機相簿裡的原始檔移到相簿的垃圾桶（二次確認；可選擇是否同時從 App 移除） */
+  mediaUri(r) { return r && r.mid != null ? 'content://media/external/images/media/' + r.mid : null; },
+  trashLocal(list, opt = {}) {
+    if (!(isApp && window.AIP2 && AIP2.trashMedia)) { toast(isApp ? '這個功能需要安裝 v1.22 以上的 APK' : '網頁版無法刪除手機裡的相片', 4000); return; }
+    const have = list.filter((r) => r.mid != null), none = list.length - have.length;
+    if (!have.length) { toast('這' + (list.length > 1 ? '些' : '張') + '相片不是從手機相簿匯入的，找不到手機裡的原始檔', 4000); return; }
+    const names = have.slice(0, 3).map((r) => '「' + Upd.esc(r.name || '') + '」').join('、') + (have.length > 3 ? ` 等 ${have.length} 張` : '');
+    const go = () => {
+      const rm = !!($('#trRm') && $('#trRm').checked);
+      MediaDel.cb = async (d) => {
+        if (!d.ok) { toast('已取消刪除', 2500); return; }
+        toast(`✓ 已把 ${have.length} 張移到相簿的垃圾桶`, 3500);
+        if (rm) { try { if (opt.after) await opt.after(true); } catch (e) {} for (const r of have) await this.remove(r.id); this.sel.clear(); await this.refresh(); }
+      };
+      if (!AIP2.trashMedia(JSON.stringify(have.map((r) => this.mediaUri(r))))) { MediaDel.cb = null; toast('無法刪除（需要 Android 11 以上）', 4000); }
+    };
+    Upd.dialog('刪除手機裡的相片？', `會把手機相簿裡的原始檔 ${names} 移到<b>相簿的垃圾桶</b>（一段時間內可以在相簿的「最近刪除」救回）。${none ? `<br><small>另外 ${none} 張不是從手機相簿匯入的，不會刪除。</small>` : ''}<label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="trRm" checked style="width:20px;height:20px;accent-color:var(--ac)"> 同時從 App 圖庫移除</label>`,
+      [['🗑 確認刪除', go], ['取消', null]]);
   },
   async remove(id) { for (const s of ['photos', 'files', 'thumbs', 'prev', 'raw']) await DB.del(s, id).catch(() => {}); await DB.del('thumbs', 'e:' + id).catch(() => {}); for (const k of ['fast', 'hq']) { DB.del('ai', `full:${id}:${k}`).catch(() => {}); for (const L of [1024, 1536, 2048, 2560, 3072]) DB.del('ai', `${id}:${k}:${L}`).catch(() => {}); } DB.del('ai', 'cloud:' + id).catch(() => {}); for (const s of ['files', 'prev', 'thumbs']) DB.del(s, id + ':orig').catch(() => {}); },
   queue: [], qRunning: false, qDone: 0, qTotal: 0,

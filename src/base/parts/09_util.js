@@ -85,6 +85,8 @@ const BG = {
     if (now || Date.now() - this.t > 900) { clearTimeout(this.timer); go(); } else if (!this.timer) this.timer = setTimeout(go, 900);
   }
 };
+/* v1.22：系統刪除／垃圾桶確認視窗的結果 */
+const MediaDel = { cb: null };
 window.onNativeEvent = function (type, data) {
   if (type === 'resume') { try { Library.render(); } catch (e) {} try { if (Cloud.active().length && Cloud.ready()) Cloud.run(); } catch (e) {} try { Upd.onResume(); } catch (e) {} try { Editor.extBack(); } catch (e) {} return false; }
   if (type === 'picked') Library.onNativePicked(typeof data === 'string' ? JSON.parse(data) : data);
@@ -92,6 +94,7 @@ window.onNativeEvent = function (type, data) {
   else if (type === 'perm') Settings.render();
   else if (type === 'http') Cloud.onHttp(typeof data === 'string' ? JSON.parse(data) : data);
   else if (type === 'apk') { try { Upd.onApk(data); } catch (e) {} }
+  else if (type === 'mediaDel') { try { const d = typeof data === 'string' ? JSON.parse(data) : data; const f = MediaDel.cb; MediaDel.cb = null; if (f) f(d); else if (d.ok) toast('✓ 已刪除', 2500); } catch (e) {} }
   else if (type === 'extFound') { try { Editor.extFound(typeof data === 'string' ? JSON.parse(data) : data); } catch (e) {} }
   else if (type === 'closed') { try { Exporter.cancel(); } catch (e) {} }   // v1.17：App 從最近使用中被滑掉 → 取消匯出
   return false;

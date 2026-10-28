@@ -8,10 +8,31 @@ const ICONS = {
   heal: '<rect x="3" y="8.5" width="18" height="7" rx="3.5" transform="rotate(-45 12 12)"/><circle cx="12" cy="12" r=".6" fill="currentColor"/><circle cx="10.4" cy="12" r=".6" fill="currentColor"/><circle cx="13.6" cy="12" r=".6" fill="currentColor"/>',
   ai: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
   versions: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/>',
+  ext: '<path d="M10 14a4.5 4.5 0 006.4 0l3.2-3.2a4.5 4.5 0 00-6.4-6.4L12 5.6"/><path d="M14 10a4.5 4.5 0 00-6.4 0l-3.2 3.2a4.5 4.5 0 006.4 6.4l1.2-1.2"/>',
   loc: '<path d="M12 21s-7-6.2-7-11.5A7 7 0 0119 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>'
 };
+/* v1.22：等效焦距（35mm 片幅）：優先用 EXIF 的 FocalLengthIn35mmFilm，沒有的話依機型的片幅換算 */
+function cropFactor(ex) {
+  const m = ((ex.make || '') + ' ' + (ex.model || '')).toUpperCase().replace(/\s+/g, ' ');
+  if (/RICOH/.test(m) && /GR/.test(m)) return 1.53;
+  if (/GFX|HASSELBLAD/.test(m)) return 0.79;
+  if (/FUJI/.test(m)) return 1.5;
+  if (/SONY/.test(m)) { if (/ILCE-[79]|ILCE-1\b|DSC-RX1\b|DSC-RX1R|ZV-E1\b/.test(m)) return 1; if (/RX100|ZV-1\b|RX10\b/.test(m)) return 2.7; return 1.5; }
+  if (/CANON/.test(m)) { if (/EOS R(7|10|50|100)\b|EOS M\b|EOS M\d|\d{2,4}D\b|REBEL|KISS/.test(m) && !/\b[156]D\b|EOS 5D|EOS 6D|EOS-1D/.test(m)) return 1.6; if (/EOS R|EOS 5D|EOS 6D|EOS-1D|EOS 1D/.test(m)) return 1; if (/POWERSHOT/.test(m)) return 2.7; return 1.6; }
+  if (/NIKON/.test(m)) { if (/Z ?(50|30|FC)\b/.test(m)) return 1.5; if (/Z ?\d|ZF\b|D[3-6]\b|DF\b|D[678]\d\d\b|D7\d\d\b/.test(m)) return /D7\d\d\d|D[35]\d\d\d/.test(m) ? 1.5 : 1; return 1.5; }
+  if (/OLYMPUS|OM DIGITAL|OM SYSTEM/.test(m)) return 2;
+  if (/PANASONIC/.test(m)) return /DC-S\d|\bS1|\bS5/.test(m) ? 1 : 2;
+  if (/LEICA/.test(m)) return /\bCL\b|\bTL/.test(m) ? 1.5 : 1;
+  return 0;
+}
+function focal35Text(ex) {
+  if (!ex) return '—'; const f = +ex.focal || 0, f35 = +ex.focal35 || 0;
+  if (f35 > 0) return Math.round(f35) + 'mm';
+  if (!f) return '—'; const k = cropFactor(ex);
+  return k ? Math.round(f * k) + 'mm' : Math.round(f) + 'mm*';
+}
 const svg = (k, sw = 1.9) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>`;
-const TOOLS = [['presets', '預設集'], ['crop', '裁切'], ['edit', '編輯'], ['mask', '遮色片'], ['heal', '修復'], ['ai', 'AI 降噪'], ['aifix', 'AI 修復'], ['loc', '位置'], ['versions', '版本']];
+const TOOLS = [['presets', '預設集'], ['crop', '裁切'], ['ext', '外部修圖'], ['edit', '編輯'], ['mask', '遮色片'], ['heal', '修復'], ['ai', 'AI 降噪'], ['aifix', 'AI 修復'], ['loc', '位置'], ['versions', '版本']];
 const SUBS = [['auto', 'AI 自動'], ['sky', '天空'], ['profile', '設定檔'], ['light', '光線'], ['curve', '曲線'], ['color', '色彩'], ['effects', '效果'], ['detail', '細節'], ['optics', '光學'], ['geo', '幾何']];
 const HUES = [['紅', '#d8443a', 0], ['橙', '#e88a2e', 30], ['黃', '#e6c535', 60], ['綠', '#4fa34a', 120], ['淺綠', '#3fb8b0', 180], ['藍', '#3d6fd1', 240], ['紫', '#7a4fc9', 270], ['洋紅', '#c94fae', 300]];
 const RATIOS = [['free', '自由'], ['orig', '原始'], ['1:1', '1:1'], ['4:5', '4:5'], ['5:4', '5:4'], ['3:2', '3:2'], ['2:3', '2:3'], ['16:9', '16:9'], ['9:16', '9:16'], ['4:3', '4:3'], ['3:4', '3:4']];
@@ -211,7 +232,7 @@ const Editor = {
     } else if (mode === 'exif') {
       const sh = ex.exposure ? (ex.exposure >= 1 ? ex.exposure.toFixed(1).replace(/\.0$/, '') + 's' : '1/' + Math.round(1 / ex.exposure) + 's') : '—';
       const cell = (k, v) => h('span', null, h('small', null, k), v);
-      tx.innerHTML = ''; tx.append(h('div', { class: 'r' }, cell('光圈', ex.fnumber ? 'f/' + (+ex.fnumber).toFixed(1).replace(/\.0$/, '') : '—'), cell('ISO', ex.iso ? String(ex.iso) : '—'), cell('快門', sh)));
+      tx.innerHTML = ''; tx.append(h('div', { class: 'r' }, cell('光圈', ex.fnumber ? 'f/' + (+ex.fnumber).toFixed(1).replace(/\.0$/, '') : '—'), cell('ISO', ex.iso ? String(ex.iso) : '—'), cell('快門', sh), cell('等效焦距', focal35Text(ex))));
     }
     if (mode === 'histo') this.drawHisto();
   },
@@ -482,7 +503,6 @@ const Editor = {
   },
   p_auto(b) {
     const ae = this.edit.aiEnh || { amt: 0 };
-    if (isApp) b.append(this.extCard());
     b.append(h('div', { class: 'aicard' },
       h('h4', null, '✨ AI 智慧增強'),
       h('div', { class: 'sub' }, '分析場景的亮度分佈、高光溢出、色彩與 ISO 雜訊風險，自動調整光線、局部對比、色彩，並單獨救回天空亮部。高 ISO 相片會節制暗部提亮、同時壓穩黑色，避免拉出雜訊色塊。'),
@@ -1114,7 +1134,7 @@ const Editor = {
     const rec = this.rec, id = rec.id; await this.persist();
     let src = '';
     try {
-      if (rec.mid != null && !rec.fixOrig && !rec.masterOri1) src = 'content://media/external/images/media/' + rec.mid;   // 相簿裡的原始檔（RAW）
+      if (rec.mid != null && !rec.fixOrig && !rec.masterOri1 && !(AIP2.mediaExists && !AIP2.mediaExists('content://media/external/images/media/' + rec.mid))) src = 'content://media/external/images/media/' + rec.mid;   // 相簿裡的原始檔（RAW）
       else {   // 已經用 AI 修復過（或不是從相簿匯入）：送目前的原圖（不含調整），讓 Lightroom 從頭調
         this.busy('準備相片…', true);
         const full = await this.ses.ensureFull(); const c = mkCanvas(full.width, full.height); c.getContext('2d').drawImage(full, 0, 0);
@@ -1177,7 +1197,7 @@ const Editor = {
     const names = list.map((x) => '「' + (x.name || '相片') + '」').join('、');
     if (!(window.AIP2 && AIP2.deleteMedia)) { toast('相簿裡另外存了' + names + '，不需要的話可以到相簿刪除', 6000); return; }
     const mm = !!(AIP2.canManageMedia && AIP2.canManageMedia());
-    const del = () => { if (AIP2.deleteMedia(JSON.stringify(list.map((x) => x.uri)))) toast(mm ? '已刪除相簿裡多出來的照片' : '請在系統視窗按「允許」完成刪除', 3000); };
+    const del = () => { const nw = !!AIP2.trashMedia; if (nw) MediaDel.cb = (d) => toast(d.ok ? '✓ 已刪除相簿裡多出來的照片' : '已取消刪除', 3000); if (AIP2.deleteMedia(JSON.stringify(list.map((x) => x.uri)))) { if (!nw) { toast(mm ? '已刪除相簿裡多出來的照片' : '請在系統視窗按「允許」完成刪除', 3000); try { AIP2.vibrate && AIP2.vibrate(''); } catch (e) {} } else if (!mm) toast('請在系統視窗按「允許」完成刪除', 3000); } };
     // v1.21.2：系統的刪除確認視窗是 Android 本身的畫面（無法改顏色）；開啟「媒體管理」權限後就不會再跳出來
     const askMM = () => Upd.dialog('不用每次按「允許」', '刪除其他 App 存的相片時，Android 預設每次都會跳出系統確認視窗。<br>到設定裡把「AI修圖軟體」的<b>「媒體管理」</b>（管理媒體）打開後，就會直接刪除、不再詢問。<br><small>只會刪除修圖流程裡多出來的副本，原始照片不會刪除。需要 Android 12 以上。</small>', [['前往設定', () => { AIP2.askManageMedia(); }], ['取消', null]]);
     if (CFG.extDel === 'always') { del(); return; }
@@ -1454,6 +1474,11 @@ const Editor = {
     const p = { erase: { engine: GenErase.cfg().engine === 'gemini' ? 'lama' : GenErase.cfg().engine }, deblur: { type: P.deblur.type, amt: P.deblur.amt / 100, full: !!P.deblur.full }, dereflect: { amt: P.dereflect.amt / 100 }, enhance: { amt: P.enhance.amt / 100 }, relight: { amt: P.relight.amt / 100 }, beauty: { amt: P.beauty.amt / 100 }, rescue: { amt: P.rescue.amt / 100, mode: P.rescue.mode } };
     await this.persist();
     if (await Cloud.enqueueFix([this.rec], ops, p, masks)) { if (ops.includes('erase')) { this.eraseMask = null; this.erasePaint = false; } P.ops = {}; this.renderPanel(); this.drawOverlay(); }
+  },
+  /* v1.22：「外部修圖」獨立工作區（Lightroom／手機相簿） */
+  t_ext(b) {
+    if (!isApp) { b.append(h('div', { class: 'aicard' }, h('h4', null, '🔗 用其他 App 修圖'), h('div', { class: 'sub' }, '這個功能需要在手機 App（APK）裡使用。'))); return; }
+    b.append(this.extCard());
   },
   t_ai(b) {
     this.aiCard(b);
@@ -1822,6 +1847,9 @@ const Editor = {
       { icon: 'ℹ️', label: '相片資訊（EXIF）', fn: () => this.info() },
       { icon: '📊', label: (CFG.hud || 'histo') === 'off' ? '顯示直方圖' : '隱藏直方圖／資訊', fn: () => { CFG.hud = (CFG.hud || 'histo') === 'off' ? 'histo' : 'off'; saveCfg(); this.applyHud(); } },
       { icon: '⟲', label: '重設所有調整', danger: true, fn: () => { this.edit = normEdit({}); this.ses.setAiPreview(null, ''); this.changed(); this.commit('重設全部'); this.renderPanel(); } },
+      // v1.22：移除（只從 App 圖庫拿掉）／刪除手機裡的原始檔（移到相簿的垃圾桶）
+      { icon: '➖', label: '從 App 移除這張', danger: true, fn: async () => { const r = this.rec; if (!r) return; if (!(await UI.confirm(`從 App 圖庫移除「${r.name}」？（手機相簿裡的原始檔不會刪除；在這裡做的調整會一起清除）`, '移除', true))) return; await this.close(); await Library.remove(r.id); await Library.refresh(); toast('已從 App 移除'); } },
+      { icon: '🗑', label: '刪除手機裡的原始檔', danger: true, fn: () => { const r = this.rec; if (!r) return; Library.trashLocal([r], { after: async (rm) => { if (rm && this.active && this.rec && this.rec.id === r.id) await this.close(); } }); } },
     ]);
   },
   copySettings() {

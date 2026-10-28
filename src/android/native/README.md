@@ -18,3 +18,5 @@ v1.19.2：`AIP2.openWith(uri, pkg, mode)`（分享或編輯到指定 App，例�
 v1.20.0：`AIP2.alert(title,text)`（高優先通知頻道 aiphoto_alert，會以橫幅浮在其他 App 上）、`alertClear()`、`alertSettings()`；`deleteMedia(json)` 以 MediaStore.createDeleteRequest 刪除其他 App 存的副本（系統確認）。
 
 v1.21.0：`Geo.java` 加入 `AIP2.vibrate`（震動）、`AIP2.wake`（匯出時 PARTIAL_WAKE_LOCK，螢幕關閉也繼續）、`AIP2.canOverlay/askOverlay/popup/popupClear`（螢幕下方 1/3 的浮動提示窗，SYSTEM_ALERT_WINDOW）、`AIP2.watch/unwatch`（原生 ContentObserver 監看 Lightroom／手機相簿存檔，找到就震動＋提示並發出 `onNativeEvent('extFound')`）。
+
+v1.22.0：`MainActivity.onActivityResult()` 開頭（super 之後）加入 `Geo.onResult(this, requestCode, resultCode)`，回傳 true 就 return：處理系統刪除（7781）／移到垃圾桶（7782）確認的結果，成功時震動並發出 `onNativeEvent('mediaDel')`。新增 `AIP2.trashMedia(json)`（MediaStore.createTrashRequest）、`mediaExists(uri)`、`canManageMedia()`／`askManageMedia()`（MANAGE_MEDIA）。
